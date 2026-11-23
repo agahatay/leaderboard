@@ -1,0 +1,18 @@
+version: "2"
+
+linters:
+  # Defaults (errcheck, govet, ineffassign, staticcheck, unused) plus:
+  enable:
+    - bodyclose      # HTTP response bodies are closed
+    - errorlint      # errors compared with errors.Is / errors.As
+    - misspell
+    - noctx          # HTTP requests carry a context
+    - unconvert
+    - usestdlibvars  # http.MethodGet instead of "GET", etc.
+  exclusions:
+    presets:
+      - std-error-handling # e.g. unchecked Close on a response body
+
+formatters:
+  enable:
+    - gofmt
