@@ -3,66 +3,84 @@
 [![CI](https://github.com/agahatay/leaderboard/actions/workflows/ci.yml/badge.svg)](https://github.com/agahatay/leaderboard/actions/workflows/ci.yml)
 
 A game leaderboard HTTP service written in Go and backed by Redis sorted sets.
-Players submit scores; clients read the top N and a player's rank.
+Players submit scores; clients read the top N, a player's rank, and the
+players around them. Score writes go through a bounded in-memory queue and a
+pool of worker goroutines that write to Redis in batches.
 
-Status: **v0.1**. Synchronous writes to Redis. The async ingest pipeline,
-API key auth, `/readyz` and the "around" endpoint are planned for v0.2.
+Status: **v0.2**. Async ingest, graceful shutdown, API key auth,
+readiness probe, "around" endpoint.
 
 ## Quick start
 
-Requires Docker with Compose v2.
+Requires Docker with Compose v2 and `openssl` (Git Bash has it).
 
 ```sh
+export API_KEY=$(openssl rand -hex 24)
+echo "API_KEY=$API_KEY" > .env        # .env is gitignored
 docker compose up --build
 ```
 
-The API listens on `localhost:8080`; Redis runs with AOF persistence on a
-named volume, so scores survive `docker compose down` / `up`.
+Compose refuses to start without `API_KEY` in `.env`. The API listens on
+`localhost:8080`; Redis runs with AOF persistence on a named volume.
+
+In a second terminal (same `API_KEY`):
 
 ```sh
-# Submit a score (only kept if it beats the player's current best)
+# Submit a score: 202 Accepted, written to Redis within FLUSH_INTERVAL
 curl -X POST localhost:8080/v1/leaderboards/global/scores \
-  -d '{"player_id":"alice","score":1200}'
+  -H "X-API-Key: $API_KEY" -d '{"player_id":"alice","score":1200}'
 
 # Top 10
 curl "localhost:8080/v1/leaderboards/global/top?limit=10"
 
-# One player's rank and score
-curl localhost:8080/v1/leaderboards/global/players/alice
+# Players around alice
+curl "localhost:8080/v1/leaderboards/global/players/alice/around?radius=5"
 ```
 
 ## API
 
-All responses are JSON. Errors look like `{"error": "message"}`.
+All responses are JSON. Errors look like `{"error": "message"}`, including
+404 for unknown routes and 405 for a wrong method.
 
 | Method and path | Behaviour |
 | --- | --- |
-| `POST /v1/leaderboards/{board}/scores` | Body `{"player_id","score"}`. Writes synchronously, returns 200. |
+| `POST /v1/leaderboards/{board}/scores` | Body `{"player_id","score"}`. Needs `X-API-Key`. Async mode: 202 when queued; 503 + `Retry-After: 1` when the queue is full or the server is shutting down. Sync mode: 200 after the write. |
 | `GET /v1/leaderboards/{board}/top?limit=10` | `{"entries":[{rank, player_id, name, score}]}`. `limit` 1..100, default 10. |
 | `GET /v1/leaderboards/{board}/players/{player}` | `{rank, score}`. 404 if the player is not on the board. |
-| `PUT /v1/players/{player}` | Body `{"name"}`. Display name shown in top lists. |
+| `GET /v1/leaderboards/{board}/players/{player}/around?radius=5` | `{"entries":[...]}`: the player and up to `radius` players above and below, clamped at the ends. `radius` 1..50, default 5. 404 if not on the board. |
+| `PUT /v1/players/{player}` | Body `{"name"}`. Needs `X-API-Key`. |
 | `GET /healthz` | Liveness: 200 while the process runs. |
+| `GET /readyz` | Readiness: 200 if Redis answers `PING` within 500 ms, else 503. |
 
 Validation: board and player IDs match `^[a-zA-Z0-9_-]{1,64}$`; score is an
 integer from 0 to 10^12; names are 1 to 64 characters. Invalid input gets 400
-with a message naming the field. Request bodies are limited to 4 KiB (413),
-unknown JSON fields are rejected.
+with a message naming the field. Request bodies are limited to 4 KiB (413);
+unknown JSON fields are rejected. A missing or wrong API key gets 401.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    C[Client] -->|HTTP JSON| H[api: handlers<br/>+ logging middleware]
-    H --> S[leaderboard.Service<br/>validation]
-    S -->|Store interface| R[redisstore]
-    S -.->|Store interface, tests| M[MemoryStore]
-    R -->|ZADD GT / ZRANGE REV<br/>ZREVRANK / HGET| DB[(Redis 8<br/>AOF on volume)]
+    C[Client] -->|HTTP JSON| MW[api: logging,<br/>API key]
+    MW --> H[handlers<br/>validation]
+    H -->|async: non-blocking send| Q[[chan ScoreEvent<br/>QUEUE_SIZE]]
+    H -->|503 Retry-After<br/>when full| C
+    Q --> W1[worker 1]
+    Q --> W2[worker ...]
+    Q --> WN[worker N]
+    W1 & W2 & WN -->|batch: one pipeline of ZADD GT<br/>at BATCH_SIZE or FLUSH_INTERVAL| R[(Redis 8<br/>AOF on volume)]
+    H -->|reads, sync writes| S[leaderboard.Service] --> ST[redisstore] --> R
 ```
+
+Shutdown (SIGINT / SIGTERM): stop accepting HTTP and wait for in-flight
+requests, then close the channel; workers drain and flush everything queued;
+then exit. Both steps share `SHUTDOWN_TIMEOUT`.
 
 | Path | Role |
 | --- | --- |
-| `cmd/server` | Config, wiring, HTTP server, `-healthcheck` flag |
-| `internal/api` | Routes, handlers, JSON helpers, request logging |
+| `cmd/server` | Config, wiring, HTTP server, graceful shutdown, `-healthcheck` flag |
+| `internal/api` | Routes, handlers, API key and logging middleware, JSON helpers |
+| `internal/ingest` | Bounded queue, worker pool, batched writes with retry |
 | `internal/leaderboard` | Domain types, validation, `Service`, `Store` interface, `MemoryStore` |
 | `internal/leaderboard/storetest` | Behaviour suite every `Store` must pass |
 | `internal/store/redisstore` | `Store` on Redis |
@@ -75,53 +93,70 @@ flowchart LR
 
 ## Design decisions and their costs
 
-- **Best-score writes with `ZADD GT`.** A score only replaces a higher one,
-  so retrying a request is harmless. Cost: a board cannot store "latest" or
-  cumulative scores; that would need a different command.
-- **Rank and score read in one `MULTI/EXEC`.** Both values come from the same
-  moment. Cost: one transaction instead of a plain pipeline.
-- **Names fetched in one pipeline after `ZRANGE`.** One extra round trip for
-  a top list, never N. Cost: names live in a separate key, so a top list can
-  briefly show an old name while it is being changed.
-- **Per-call Redis timeout (`REDIS_TIMEOUT`, default 200ms).** A slow Redis
-  turns into fast 500s instead of piled-up requests. Cost: a timeout under
-  load is an error the client must retry.
-- **Startup does not fail when Redis is down.** The process stays up and
-  returns 500 until Redis is reachable; Compose waits for a healthy Redis
-  before starting the API.
-- **One shared test suite for all stores.** `MemoryStore` and the Redis store
-  run the same behaviour tests, including tie ordering, so unit tests on the
-  memory store reflect production behaviour.
-- **Distroless runtime image.** No shell or package manager in production
-  (about 20 MB). Cost: no `curl` for health checks, so the binary has a
-  `-healthcheck` mode.
+Full records are in [`docs/decisions.md`](docs/decisions.md). In short:
+
+- **Async ingest.** Fewer Redis round trips and visible back-pressure (503)
+  instead of growing latency. Cost: a 202 means queued, not stored. Scores
+  still in memory are lost if the process crashes; `INGEST_MODE=sync` avoids
+  this at the price of one Redis write per request.
+- **Graceful shutdown drains the queue.** Proved by a test that cancels the
+  server under load and checks every 202-accepted score is stored.
+- **`ZADD GT` (best score).** Retries are harmless. Cost: no "latest" or
+  cumulative scores.
+- **Per-call Redis timeout.** A slow Redis gives fast errors instead of
+  piled-up requests.
+- **API key compared in constant time** over SHA-256 digests. Cost: one
+  shared key, no per-client identity.
+- **Separate liveness and readiness.** A Redis outage marks the API not
+  ready instead of restarting it.
+- **Shared test suite for all stores**, so tests on `MemoryStore` reflect
+  Redis behaviour, including tie order.
+- **Distroless runtime image** (about 20 MB), so the binary has its own
+  `-healthcheck` mode instead of curl.
 
 ## Configuration
 
 | Variable | Default | Notes |
 | --- | --- | --- |
+| `API_KEY` | none | **Required.** Put it in `.env` (gitignored), see `.env.example` |
 | `PORT` | `8080` | 1..65535 |
 | `REDIS_ADDR` | `localhost:6379` | |
-| `REDIS_PASSWORD` | empty | Put real values in `.env` (gitignored), see `.env.example` |
-| `REDIS_TIMEOUT` | `200ms` | Go duration, must be positive |
+| `REDIS_PASSWORD` | empty | |
+| `REDIS_TIMEOUT` | `200ms` | Per Redis call |
+| `INGEST_MODE` | `async` | `async` (202, queued) or `sync` (200, written) |
+| `QUEUE_SIZE` | `1024` | Channel capacity |
+| `WORKERS` | `4` | Writer goroutines |
+| `BATCH_SIZE` | `100` | Events per Redis pipeline |
+| `FLUSH_INTERVAL` | `50ms` | Max time an event waits in a partial batch |
+| `SHUTDOWN_TIMEOUT` | `10s` | Budget for HTTP shutdown plus queue drain |
 
 Invalid values stop the process at startup with all problems listed.
 
 ## Running tests
 
 ```sh
-go test -race ./...                         # unit tests; Redis tests are skipped
-docker compose up -d redis                  # Redis on 127.0.0.1:6379
+go test -race ./...                             # unit tests; Redis tests are skipped
+docker compose up -d redis                      # Redis on 127.0.0.1:6379
 REDIS_ADDR=localhost:6379 go test -race ./...   # also runs Redis integration tests
-golangci-lint run                           # config in .golangci.yml
+golangci-lint run                               # config in .golangci.yml
 ```
 
-On Windows, `-race` needs cgo and a C compiler (for example MSYS2 UCRT64 gcc)
-on `PATH`. Integration tests use board and player IDs derived from the test
-name and delete their keys afterwards.
+Notable tests:
 
-CI (GitHub Actions) runs the gofmt check, `go vet`, golangci-lint,
-`go test -race` against a Redis service container, and a Docker build.
+- `internal/ingest`: flush on batch size, flush on interval, drain on close,
+  `ErrQueueFull`, retry then success, drop after max attempts, close
+  timeout, and many producers racing with `Close`. Time-based tests use
+  `testing/synctest`, so they run on a fake clock without sleeping.
+- `cmd/server/shutdown_test.go`: the real `serve` function under load from
+  16 HTTP clients is cancelled mid-load; every 202-accepted score must be in
+  the store.
+- `internal/api`: 401 without a key, 503 + `Retry-After` when the queue is
+  full, `/readyz` with a hanging Redis.
+
+On Windows, `-race` needs cgo and a C compiler (for example MSYS2 UCRT64 gcc)
+on `PATH`. CI (GitHub Actions) runs the gofmt check, `go vet`,
+golangci-lint, `go test -race` against a Redis service container, and a
+Docker build.
 
 ## Measured results
 
@@ -132,9 +167,13 @@ for phase 4; they will be listed here with date, machine and exact command.
 
 - **Equal scores are ordered by player ID** (descending, Redis `REV` order),
   not by who reached the score first.
-- No authentication yet: anyone who can reach the API can write scores
-  (API key middleware is planned for v0.2).
-- No graceful shutdown yet; in-flight requests are cut off on stop.
+- **Accepted (202) scores can be lost on a crash.** They live in memory until
+  their batch is written. A graceful stop drains them; SIGKILL, OOM or power
+  loss does not. A batch that still fails after 3 attempts is dropped and
+  logged.
+- **"Around" is not atomic**: a write between its two Redis calls can shift
+  the window by one place.
+- One shared API key; no per-client keys or rate limiting.
 - Redis in `docker-compose.yml` has no password and is bound to `127.0.0.1`.
   It is meant for local development only.
 - One Redis instance, no replication.
