@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,17 +13,36 @@ import (
 	"github.com/agahatay/leaderboard/internal/leaderboard"
 )
 
+const testAPIKey = "test-key"
+
+type okPinger struct{}
+
+func (okPinger) Ping(context.Context) error { return nil }
+
+// newTestHandler returns a sync-mode handler on a fresh MemoryStore.
 func newTestHandler(t *testing.T) (http.Handler, *leaderboard.Service) {
 	t.Helper()
 	svc := leaderboard.NewService(leaderboard.NewMemoryStore())
-	return NewHandler(svc, slog.New(slog.DiscardHandler)), svc
+	return NewHandler(Deps{
+		Service: svc, Ready: okPinger{}, APIKey: testAPIKey, Logger: slog.New(slog.DiscardHandler),
+	}), svc
 }
 
+// do sends a request carrying the valid API key.
 func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	return doWithKey(t, h, method, path, body, testAPIKey)
+}
+
+// doWithKey sends a request with the given X-API-Key ("" sends none).
+func doWithKey(t *testing.T, h http.Handler, method, path, body, key string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequestWithContext(t.Context(), method, path, strings.NewReader(body))
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if key != "" {
+		req.Header.Set("X-API-Key", key)
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -158,7 +178,7 @@ func TestTop(t *testing.T) {
 			if string(raw["entries"]) == "null" {
 				t.Fatal(`"entries" is null, want an array`)
 			}
-			var got topResponse
+			var got entriesResponse
 			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 				t.Fatalf("decode: %v", err)
 			}
@@ -224,7 +244,7 @@ func TestSetNameShowsInTop(t *testing.T) {
 	}
 
 	rec := do(t, h, http.MethodGet, "/v1/leaderboards/global/top", "")
-	var got topResponse
+	var got entriesResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}

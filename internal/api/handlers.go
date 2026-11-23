@@ -1,12 +1,18 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
+	"github.com/agahatay/leaderboard/internal/ingest"
 	"github.com/agahatay/leaderboard/internal/leaderboard"
 )
+
+// readyTimeout bounds the Redis PING behind /readyz.
+const readyTimeout = 500 * time.Millisecond
 
 type scoreRequest struct {
 	PlayerID string `json:"player_id"`
@@ -19,7 +25,7 @@ type scoreResponse struct {
 	Score    int64  `json:"score"`
 }
 
-type topResponse struct {
+type entriesResponse struct {
 	Entries []leaderboard.Entry `json:"entries"`
 }
 
@@ -41,29 +47,62 @@ func (h *handler) submitScore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "score is required")
 		return
 	}
-	if err := h.svc.SubmitScore(r.Context(), r.PathValue("board"), req.PlayerID, *req.Score); err != nil {
+	ev := leaderboard.ScoreEvent{Board: r.PathValue("board"), PlayerID: req.PlayerID, Score: *req.Score}
+	resp := scoreResponse{PlayerID: ev.PlayerID, Score: ev.Score}
+
+	if h.queue == nil { // sync mode
+		if err := h.svc.SubmitScore(r.Context(), ev.Board, ev.PlayerID, ev.Score); err != nil {
+			h.writeServiceError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// Async mode: validate now so bad input still gets a 400, then queue.
+	if err := leaderboard.ValidateScoreEvent(ev); err != nil {
 		h.writeServiceError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, scoreResponse{PlayerID: req.PlayerID, Score: *req.Score})
+	switch err := h.queue.Enqueue(ev); {
+	case err == nil:
+		writeJSON(w, http.StatusAccepted, resp)
+	case errors.Is(err, ingest.ErrQueueFull):
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "write queue is full, retry later")
+	case errors.Is(err, ingest.ErrClosed):
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "server is shutting down")
+	default:
+		h.writeServiceError(w, r, err)
+	}
+}
+
+// intQuery reads an integer query parameter, or def if it is absent.
+func intQuery(r *http.Request, name string, def int) (int, error) {
+	s := r.URL.Query().Get(name)
+	if s == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, &leaderboard.ValidationError{Field: name, Msg: "must be an integer"}
+	}
+	return n, nil
 }
 
 func (h *handler) top(w http.ResponseWriter, r *http.Request) {
-	limit := leaderboard.DefaultLimit
-	if s := r.URL.Query().Get("limit"); s != "" {
-		n, err := strconv.Atoi(s)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "limit must be an integer")
-			return
-		}
-		limit = n
+	limit, err := intQuery(r, "limit", leaderboard.DefaultLimit)
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
 	}
 	entries, err := h.svc.Top(r.Context(), r.PathValue("board"), limit)
 	if err != nil {
 		h.writeServiceError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, topResponse{Entries: entries})
+	writeJSON(w, http.StatusOK, entriesResponse{Entries: entries})
 }
 
 func (h *handler) playerRank(w http.ResponseWriter, r *http.Request) {
@@ -73,6 +112,20 @@ func (h *handler) playerRank(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, pr)
+}
+
+func (h *handler) around(w http.ResponseWriter, r *http.Request) {
+	radius, err := intQuery(r, "radius", leaderboard.DefaultRadius)
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	entries, err := h.svc.Around(r.Context(), r.PathValue("board"), r.PathValue("player"), radius)
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entriesResponse{Entries: entries})
 }
 
 func (h *handler) setName(w http.ResponseWriter, r *http.Request) {
@@ -88,8 +141,20 @@ func (h *handler) setName(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, nameResponse{PlayerID: player, Name: req.Name})
 }
 
+// healthz is liveness: the process is up and serving HTTP.
 func (h *handler) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// readyz is readiness: the store answers a PING within readyTimeout.
+func (h *handler) readyz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), readyTimeout)
+	defer cancel()
+	if err := h.ready.Ping(ctx); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "redis is not reachable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 // writeServiceError maps domain errors to HTTP status codes. Unknown errors
