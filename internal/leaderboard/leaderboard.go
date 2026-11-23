@@ -10,12 +10,14 @@ import (
 	"unicode/utf8"
 )
 
+// MaxScore is the highest accepted score (1e12).
+const MaxScore int64 = 1_000_000_000_000
+
 // Limits enforced by the domain.
 const (
-	MaxScore     int64 = 1_000_000_000_000
-	DefaultLimit       = 10
-	MaxLimit           = 100
-	MaxNameLen         = 64
+	DefaultLimit = 10
+	MaxLimit     = 100
+	MaxNameLen   = 64
 )
 
 // ErrNotFound is returned when a player has no score on a board.

@@ -20,7 +20,7 @@ func newTestHandler(t *testing.T) (http.Handler, *leaderboard.Service) {
 
 func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), method, path, strings.NewReader(body))
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
