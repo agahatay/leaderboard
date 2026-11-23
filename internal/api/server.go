@@ -24,5 +24,5 @@ func NewHandler(svc *leaderboard.Service, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("PUT /v1/players/{player}", h.setName)
 	mux.HandleFunc("GET /healthz", h.healthz)
 
-	return logRequests(logger, mux)
+	return logRequests(logger, jsonRouteErrors(mux))
 }

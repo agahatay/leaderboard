@@ -89,11 +89,30 @@ func TestSubmitScore(t *testing.T) {
 	}
 }
 
-func TestSubmitScoreWrongMethod(t *testing.T) {
-	h, _ := newTestHandler(t)
-	rec := do(t, h, http.MethodGet, "/v1/leaderboards/global/scores", "")
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("status = %d, want 405", rec.Code)
+// Unmatched routes must also answer with a JSON error body, not ServeMux's
+// default plain text.
+func TestRouteErrorsAreJSON(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantAllow  string
+	}{
+		{"unknown path", http.MethodGet, "/nope", http.StatusNotFound, ""},
+		{"unknown version", http.MethodGet, "/v2/leaderboards/global/top", http.StatusNotFound, ""},
+		{"GET on POST route", http.MethodGet, "/v1/leaderboards/global/scores", http.StatusMethodNotAllowed, "POST"},
+		{"DELETE on PUT route", http.MethodDelete, "/v1/players/p1", http.StatusMethodNotAllowed, "PUT"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _ := newTestHandler(t)
+			rec := do(t, h, tt.method, tt.path, "")
+			assertError(t, rec, tt.wantStatus)
+			if got := rec.Header().Get("Allow"); got != tt.wantAllow {
+				t.Errorf("Allow = %q, want %q", got, tt.wantAllow)
+			}
+		})
 	}
 }
 
