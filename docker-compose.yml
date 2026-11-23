@@ -19,9 +19,20 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # Read from .env (gitignored). Compose refuses to start without it.
+      API_KEY: ${API_KEY:?API_KEY is not set. Create .env from .env.example}
       PORT: "8080"
       REDIS_ADDR: redis:6379
-      REDIS_TIMEOUT: 200ms
+      REDIS_TIMEOUT: ${REDIS_TIMEOUT:-200ms}
+      INGEST_MODE: ${INGEST_MODE:-async}
+      QUEUE_SIZE: ${QUEUE_SIZE:-1024}
+      WORKERS: ${WORKERS:-4}
+      BATCH_SIZE: ${BATCH_SIZE:-100}
+      FLUSH_INTERVAL: ${FLUSH_INTERVAL:-50ms}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10s}
+    # Docker sends SIGKILL after this. It must be longer than SHUTDOWN_TIMEOUT
+    # or the queue drain could be cut off (Docker's default is also 10s).
+    stop_grace_period: 15s
     depends_on:
       redis:
         condition: service_healthy
