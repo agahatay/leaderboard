@@ -31,6 +31,8 @@ func Run(t *testing.T, newStore Factory) {
 	t.Run("SubmitScoreKeepsBest", func(t *testing.T) { testSubmitScoreKeepsBest(t, newStore) })
 	t.Run("Top", func(t *testing.T) { testTop(t, newStore) })
 	t.Run("PlayerRank", func(t *testing.T) { testPlayerRank(t, newStore) })
+	t.Run("SubmitScoresBatch", func(t *testing.T) { testSubmitScoresBatch(t, newStore) })
+	t.Run("Around", func(t *testing.T) { testAround(t, newStore) })
 	t.Run("BoardsAreIndependent", func(t *testing.T) { testBoardsAreIndependent(t, newStore) })
 	t.Run("ConcurrentAccess", func(t *testing.T) { testConcurrentAccess(t, newStore) })
 }
@@ -171,6 +173,95 @@ func testPlayerRank(t *testing.T, newStore Factory) {
 			}
 			if got != tt.want {
 				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func testSubmitScoresBatch(t *testing.T, newStore Factory) {
+	s, p := newStore(t), Prefix(t)
+	boardA, boardB := p+"-a", p+"-b"
+	if err := s.SubmitScore(t.Context(), boardA, p+"_old", 500); err != nil {
+		t.Fatal(err)
+	}
+	batch := []leaderboard.ScoreEvent{
+		{Board: boardA, PlayerID: p + "_x", Score: 10},
+		{Board: boardA, PlayerID: p + "_x", Score: 30}, // same player twice: best wins
+		{Board: boardA, PlayerID: p + "_x", Score: 20},
+		{Board: boardA, PlayerID: p + "_old", Score: 100}, // lower than stored 500
+		{Board: boardB, PlayerID: p + "_x", Score: 7},     // other board in same batch
+	}
+	if err := s.SubmitScores(t.Context(), batch); err != nil {
+		t.Fatalf("SubmitScores: %v", err)
+	}
+	if err := s.SubmitScores(t.Context(), nil); err != nil {
+		t.Fatalf("SubmitScores(nil): %v", err)
+	}
+
+	tests := []struct {
+		board, player string
+		want          int64
+	}{
+		{boardA, p + "_x", 30},
+		{boardA, p + "_old", 500},
+		{boardB, p + "_x", 7},
+	}
+	for _, tt := range tests {
+		got, err := s.PlayerRank(t.Context(), tt.board, tt.player)
+		if err != nil {
+			t.Errorf("PlayerRank(%s, %s): %v", tt.board, tt.player, err)
+			continue
+		}
+		if got.Score != tt.want {
+			t.Errorf("%s on %s: score %d, want %d", tt.player, tt.board, got.Score, tt.want)
+		}
+	}
+}
+
+func testAround(t *testing.T, newStore Factory) {
+	s, p := newStore(t), Prefix(t)
+	seed(t, s, p, p) // order: bob, dave, carol, alice, erin
+	if err := s.SetName(t.Context(), p+"_carol", "Carol"); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		board     string
+		player    string
+		radius    int
+		wantIDs   []string
+		wantFirst int64 // rank of the first entry
+		wantErr   error
+	}{
+		{"middle", p, p + "_carol", 1, ids(p, "dave", "carol", "alice"), 2, nil},
+		{"clamped at top", p, p + "_bob", 2, ids(p, "bob", "dave", "carol"), 1, nil},
+		{"clamped at bottom", p, p + "_erin", 2, ids(p, "carol", "alice", "erin"), 3, nil},
+		{"radius covers board", p, p + "_carol", 50, ids(p, "bob", "dave", "carol", "alice", "erin"), 1, nil},
+		{"unknown player", p, p + "_zed", 1, nil, 0, leaderboard.ErrNotFound},
+		{"unknown board", p + "-none", p + "_bob", 1, nil, 0, leaderboard.ErrNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := s.Around(t.Context(), tt.board, tt.player, tt.radius)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr != nil {
+				return
+			}
+			gotIDs := make([]string, len(got))
+			for i, e := range got {
+				gotIDs[i] = e.PlayerID
+				if want := tt.wantFirst + int64(i); e.Rank != want {
+					t.Errorf("%s: rank %d, want %d", e.PlayerID, e.Rank, want)
+				}
+				if e.PlayerID == p+"_carol" && e.Name != "Carol" {
+					t.Errorf("carol's name = %q, want Carol", e.Name)
+				}
+			}
+			if !slices.Equal(gotIDs, tt.wantIDs) {
+				t.Errorf("ids = %v, want %v", gotIDs, tt.wantIDs)
 			}
 		})
 	}

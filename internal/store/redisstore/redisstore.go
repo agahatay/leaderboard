@@ -53,14 +53,56 @@ func (s *Store) SubmitScore(ctx context.Context, board, playerID string, score i
 	return nil
 }
 
+// SubmitScores sends one ZADD GT per event in a single pipeline: one round
+// trip for the whole batch.
+func (s *Store) SubmitScores(ctx context.Context, events []leaderboard.ScoreEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	ctx, cancel := s.withTimeout(ctx)
+	defer cancel()
+
+	pipe := s.rdb.Pipeline()
+	for _, ev := range events {
+		pipe.ZAddGT(ctx, boardKey(ev.Board), redis.Z{Score: float64(ev.Score), Member: ev.PlayerID})
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("pipeline zadd (%d events): %w", len(events), err)
+	}
+	return nil
+}
+
 // Top reads the best n members, then fetches all names in one pipeline.
 func (s *Store) Top(ctx context.Context, board string, n int) ([]leaderboard.Entry, error) {
 	ctx, cancel := s.withTimeout(ctx)
 	defer cancel()
+	return s.rangeWithNames(ctx, boardKey(board), 0, int64(n-1))
+}
+
+// Around finds the player's 0-based rank r, then reads r-radius..r+radius.
+// These are two round trips, not one atomic read: a write in between can
+// shift the window by a place (documented in README).
+func (s *Store) Around(ctx context.Context, board, playerID string, radius int) ([]leaderboard.Entry, error) {
+	ctx, cancel := s.withTimeout(ctx)
+	defer cancel()
 
 	key := boardKey(board)
+	r, err := s.rdb.ZRevRank(ctx, key, playerID).Result()
+	if errors.Is(err, redis.Nil) {
+		return nil, leaderboard.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("zrevrank %s %s: %w", key, playerID, err)
+	}
+	// Redis clamps a stop index past the end; we only clamp the start.
+	return s.rangeWithNames(ctx, key, max(0, r-int64(radius)), r+int64(radius))
+}
+
+// rangeWithNames reads 0-based ranks start..stop (highest score first) and
+// fills in names with one pipeline of HGET.
+func (s *Store) rangeWithNames(ctx context.Context, key string, start, stop int64) ([]leaderboard.Entry, error) {
 	zs, err := s.rdb.ZRangeArgsWithScores(ctx, redis.ZRangeArgs{
-		Key: key, Start: 0, Stop: int64(n - 1), Rev: true,
+		Key: key, Start: start, Stop: stop, Rev: true,
 	}).Result()
 	if err != nil {
 		return nil, fmt.Errorf("zrange %s: %w", key, err)
@@ -78,7 +120,7 @@ func (s *Store) Top(ctx context.Context, board string, n int) ([]leaderboard.Ent
 		if !ok {
 			return nil, fmt.Errorf("zrange %s: unexpected member type %T", key, z.Member)
 		}
-		entries[i] = leaderboard.Entry{Rank: int64(i + 1), PlayerID: id, Score: int64(z.Score)}
+		entries[i] = leaderboard.Entry{Rank: start + int64(i) + 1, PlayerID: id, Score: int64(z.Score)}
 		names[i] = pipe.HGet(ctx, playerKey(id), "name")
 	}
 	// Exec reports redis.Nil when any player has no name; that is expected.
@@ -116,6 +158,15 @@ func (s *Store) PlayerRank(ctx context.Context, board, playerID string) (leaderb
 		return leaderboard.PlayerRank{}, fmt.Errorf("zrevrank/zscore %s %s: %w", key, playerID, err)
 	}
 	return leaderboard.PlayerRank{Rank: rankCmd.Val() + 1, Score: int64(scoreCmd.Val())}, nil
+}
+
+// Ping checks that Redis answers. The caller sets the deadline (/readyz uses
+// 500ms), so REDIS_TIMEOUT is not applied here.
+func (s *Store) Ping(ctx context.Context) error {
+	if err := s.rdb.Ping(ctx).Err(); err != nil {
+		return fmt.Errorf("redis ping: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) SetName(ctx context.Context, playerID, name string) error {

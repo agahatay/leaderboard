@@ -40,6 +40,15 @@ func TestServiceValidation(t *testing.T) {
 
 		{"rank bad player", func(ctx context.Context, s *Service) error { _, err := s.PlayerRank(ctx, "b", "p p"); return err }, "player_id"},
 
+		{"radius 1", func(ctx context.Context, s *Service) error { _, err := s.Around(ctx, "b", "p", 1); return err }, ""},
+		{"radius max", func(ctx context.Context, s *Service) error { _, err := s.Around(ctx, "b", "p", MaxRadius); return err }, ""},
+		{"radius 0", func(ctx context.Context, s *Service) error { _, err := s.Around(ctx, "b", "p", 0); return err }, "radius"},
+		{"radius above max", func(ctx context.Context, s *Service) error {
+			_, err := s.Around(ctx, "b", "p", MaxRadius+1)
+			return err
+		}, "radius"},
+		{"around bad player", func(ctx context.Context, s *Service) error { _, err := s.Around(ctx, "b", "a.b", 1); return err }, "player_id"},
+
 		{"valid name", func(ctx context.Context, s *Service) error { return s.SetName(ctx, "p", "Ayşe") }, ""},
 		{"64 rune name", func(ctx context.Context, s *Service) error { return s.SetName(ctx, "p", strings.Repeat("ş", 64)) }, ""},
 		{"empty name", func(ctx context.Context, s *Service) error { return s.SetName(ctx, "p", "") }, "name"},
@@ -50,13 +59,15 @@ func TestServiceValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.call(t.Context(), svc)
+			var verr *ValidationError
 			if tt.wantField == "" {
-				if err != nil {
+				// Passing validation is what matters; an empty store may
+				// still answer ErrNotFound.
+				if err != nil && !errors.Is(err, ErrNotFound) {
 					t.Fatalf("unexpected error: %v", err)
 				}
 				return
 			}
-			var verr *ValidationError
 			if !errors.As(err, &verr) {
 				t.Fatalf("err = %v, want *ValidationError", err)
 			}

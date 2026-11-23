@@ -35,32 +35,22 @@ func ranksAbove(idA string, scoreA int64, idB string, scoreB int64) bool {
 	return idA > idB
 }
 
-func (m *MemoryStore) SubmitScore(ctx context.Context, board, playerID string, score int64) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+// submitLocked applies the best-score rule. The caller holds m.mu.
+func (m *MemoryStore) submitLocked(board, playerID string, score int64) {
 	scores, ok := m.boards[board]
 	if !ok {
 		scores = make(map[string]int64)
 		m.boards[board] = scores
 	}
 	if current, exists := scores[playerID]; exists && score <= current {
-		return nil
+		return
 	}
 	scores[playerID] = score
-	return nil
 }
 
-func (m *MemoryStore) Top(ctx context.Context, board string, n int) ([]Entry, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
+// rankedLocked returns every entry of board in rank order, names filled in.
+// The caller holds at least a read lock.
+func (m *MemoryStore) rankedLocked(board string) []Entry {
 	scores := m.boards[board] // nil map is fine to range over
 	entries := make([]Entry, 0, len(scores))
 	for id, score := range scores {
@@ -72,12 +62,45 @@ func (m *MemoryStore) Top(ctx context.Context, board string, n int) ([]Entry, er
 		}
 		return cmp.Compare(b.PlayerID, a.PlayerID)
 	})
-	if len(entries) > n {
-		entries = entries[:n]
-	}
 	for i := range entries {
 		entries[i].Rank = int64(i + 1)
 		entries[i].Name = m.names[entries[i].PlayerID]
+	}
+	return entries
+}
+
+func (m *MemoryStore) SubmitScore(ctx context.Context, board, playerID string, score int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.submitLocked(board, playerID, score)
+	return nil
+}
+
+func (m *MemoryStore) SubmitScores(ctx context.Context, events []ScoreEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ev := range events {
+		m.submitLocked(ev.Board, ev.PlayerID, ev.Score)
+	}
+	return nil
+}
+
+func (m *MemoryStore) Top(ctx context.Context, board string, n int) ([]Entry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	entries := m.rankedLocked(board)
+	if len(entries) > n {
+		entries = entries[:n]
 	}
 	return entries, nil
 }
@@ -101,6 +124,21 @@ func (m *MemoryStore) PlayerRank(ctx context.Context, board, playerID string) (P
 		}
 	}
 	return PlayerRank{Rank: rank, Score: score}, nil
+}
+
+func (m *MemoryStore) Around(ctx context.Context, board, playerID string, radius int) ([]Entry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	entries := m.rankedLocked(board)
+	i := slices.IndexFunc(entries, func(e Entry) bool { return e.PlayerID == playerID })
+	if i < 0 {
+		return nil, ErrNotFound
+	}
+	return entries[max(0, i-radius):min(len(entries), i+radius+1)], nil
 }
 
 func (m *MemoryStore) SetName(ctx context.Context, playerID, name string) error {

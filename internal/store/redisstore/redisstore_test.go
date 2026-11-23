@@ -112,6 +112,11 @@ func TestRedisStoreUnreachable(t *testing.T) {
 		{"top", func(ctx context.Context) error { _, err := s.Top(ctx, "b", 10); return err }, "zrange lb:b"},
 		{"rank", func(ctx context.Context) error { _, err := s.PlayerRank(ctx, "b", "p"); return err }, "lb:b"},
 		{"name", func(ctx context.Context) error { return s.SetName(ctx, "p", "x") }, "hset player:p"},
+		{"batch", func(ctx context.Context) error {
+			return s.SubmitScores(ctx, []leaderboard.ScoreEvent{{Board: "b", PlayerID: "p", Score: 1}})
+		}, "pipeline zadd (1 events)"},
+		{"around", func(ctx context.Context) error { _, err := s.Around(ctx, "b", "p", 1); return err }, "zrevrank lb:b"},
+		{"ping", s.Ping, "redis ping"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

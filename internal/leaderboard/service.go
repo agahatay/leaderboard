@@ -17,13 +17,7 @@ func NewService(store Store) *Service {
 
 // SubmitScore validates and records a score.
 func (s *Service) SubmitScore(ctx context.Context, board, playerID string, score int64) error {
-	if err := validateID("board", board); err != nil {
-		return err
-	}
-	if err := validateID("player_id", playerID); err != nil {
-		return err
-	}
-	if err := validateScore(score); err != nil {
+	if err := ValidateScoreEvent(ScoreEvent{Board: board, PlayerID: playerID, Score: score}); err != nil {
 		return err
 	}
 	if err := s.store.SubmitScore(ctx, board, playerID, score); err != nil {
@@ -60,6 +54,25 @@ func (s *Service) PlayerRank(ctx context.Context, board, playerID string) (Playe
 		return PlayerRank{}, fmt.Errorf("player rank: %w", err)
 	}
 	return pr, nil
+}
+
+// Around returns the entries within radius of the player on board, or an
+// error wrapping ErrNotFound.
+func (s *Service) Around(ctx context.Context, board, playerID string, radius int) ([]Entry, error) {
+	if err := validateID("board", board); err != nil {
+		return nil, err
+	}
+	if err := validateID("player_id", playerID); err != nil {
+		return nil, err
+	}
+	if err := validateRadius(radius); err != nil {
+		return nil, err
+	}
+	entries, err := s.store.Around(ctx, board, playerID, radius)
+	if err != nil {
+		return nil, fmt.Errorf("around: %w", err)
+	}
+	return entries, nil
 }
 
 // SetName validates and stores a player's display name.

@@ -15,10 +15,31 @@ const MaxScore int64 = 1_000_000_000_000
 
 // Limits enforced by the domain.
 const (
-	DefaultLimit = 10
-	MaxLimit     = 100
-	MaxNameLen   = 64
+	DefaultLimit  = 10
+	MaxLimit      = 100
+	DefaultRadius = 5
+	MaxRadius     = 50
+	MaxNameLen    = 64
 )
+
+// ScoreEvent is one score submission.
+type ScoreEvent struct {
+	Board    string
+	PlayerID string
+	Score    int64
+}
+
+// ValidateScoreEvent checks board, player and score. The async write path
+// calls it before queueing, so invalid input still gets a 400.
+func ValidateScoreEvent(ev ScoreEvent) error {
+	if err := validateID("board", ev.Board); err != nil {
+		return err
+	}
+	if err := validateID("player_id", ev.PlayerID); err != nil {
+		return err
+	}
+	return validateScore(ev.Score)
+}
 
 // ErrNotFound is returned when a player has no score on a board.
 var ErrNotFound = errors.New("not found")
@@ -66,6 +87,13 @@ func validateScore(score int64) error {
 func validateLimit(limit int) error {
 	if limit < 1 || limit > MaxLimit {
 		return &ValidationError{Field: "limit", Msg: fmt.Sprintf("must be between 1 and %d", MaxLimit)}
+	}
+	return nil
+}
+
+func validateRadius(radius int) error {
+	if radius < 1 || radius > MaxRadius {
+		return &ValidationError{Field: "radius", Msg: fmt.Sprintf("must be between 1 and %d", MaxRadius)}
 	}
 	return nil
 }
