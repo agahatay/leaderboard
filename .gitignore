@@ -1,0 +1,12 @@
+# Local secrets and config
+.env
+
+# Build output
+/bin/
+*.exe
+*.test
+*.out
+
+# Editors
+.idea/
+.vscode/
