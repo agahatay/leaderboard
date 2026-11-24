@@ -59,3 +59,36 @@ jobs:
       - uses: actions/checkout@v7
       - name: docker build
         run: docker build -t leaderboard:ci .
+
+  # On v* tags only, after every other job passed: push the image to
+  # GitHub Container Registry as ghcr.io/<owner>/<repo>:<version>.
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, test, docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # GITHUB_TOKEN may push to this repository's packages
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # v0.3.0 -> 0.3.0 and 0.3, plus sha-<short commit>
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

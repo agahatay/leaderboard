@@ -162,7 +162,8 @@ Notable tests:
 On Windows, `-race` needs cgo and a C compiler (for example MSYS2 UCRT64 gcc)
 on `PATH`. CI (GitHub Actions) runs the gofmt check, `go vet`,
 golangci-lint, `go test -race` against a Redis service container, and a
-Docker build.
+Docker build. On `v*` tags, once all of those pass, it pushes the image to
+GitHub Container Registry as `ghcr.io/agahatay/leaderboard:<version>`.
 
 ## Measured results
 
