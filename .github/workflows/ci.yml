@@ -81,7 +81,8 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
-          # v0.3.0 -> 0.3.0 and 0.3, plus sha-<short commit>
+          # v0.3.0 -> 0.3.0, 0.3 and sha-<short commit>; metadata-action
+          # also adds "latest" for semver tags (flavor latest=auto).
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
