@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +75,72 @@ func TestLoad(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRedisURL(t *testing.T) {
+	base := map[string]string{"API_KEY": "k", "REDIS_ADDR": "ignored:6379", "REDIS_PASSWORD": "ignored"}
+
+	tests := []struct {
+		name         string
+		url          string
+		wantAddr     string
+		wantPassword string
+		wantTLS      bool
+		wantDB       int
+	}{
+		{"not set uses REDIS_ADDR", "", "ignored:6379", "ignored", false, 0},
+		{"redis url", "redis://red-abc123:6379", "red-abc123:6379", "", false, 0},
+		{"with user, password and db", "redis://user:pw@cache.example:6380/2", "cache.example:6380", "pw", false, 2},
+		{"tls", "rediss://default:pw@cache.example:6379", "cache.example:6379", "pw", true, 0},
+		{"default port", "redis://cache.example", "cache.example:6379", "", false, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := maps.Clone(base)
+			env["REDIS_URL"] = tt.url
+			cfg, err := Load(func(k string) string { return env[k] })
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			opts, err := cfg.RedisOptions()
+			if err != nil {
+				t.Fatalf("RedisOptions: %v", err)
+			}
+			if opts.Addr != tt.wantAddr || opts.Password != tt.wantPassword || opts.DB != tt.wantDB {
+				t.Errorf("addr=%q password=%q db=%d, want %q %q %d",
+					opts.Addr, opts.Password, opts.DB, tt.wantAddr, tt.wantPassword, tt.wantDB)
+			}
+			if gotTLS := opts.TLSConfig != nil; gotTLS != tt.wantTLS {
+				t.Errorf("TLS = %v, want %v", gotTLS, tt.wantTLS)
+			}
+		})
+	}
+}
+
+// TestRedisURLInvalid checks that a bad URL stops startup and that the error,
+// which is logged, never contains the URL or its password.
+func TestRedisURLInvalid(t *testing.T) {
+	const secret = "hunter2-secret"
+	for _, url := range []string{
+		"http://user:" + secret + "@cache.example:6379",  // wrong scheme
+		"redis://user:" + secret + "@cache.example:port", // bad port
+		"redis://user:" + secret + "@cache.example/notanumber",
+		"redis://user:" + secret + "%zz@cache.example", // bad escape, url.Parse fails
+	} {
+		t.Run(url, func(t *testing.T) {
+			env := map[string]string{"API_KEY": "k", "REDIS_URL": url}
+			_, err := Load(func(k string) string { return env[k] })
+			if err == nil {
+				t.Fatal("want an error for an invalid REDIS_URL")
+			}
+			if !strings.Contains(err.Error(), "REDIS_URL") {
+				t.Errorf("error %q does not name REDIS_URL", err)
+			}
+			if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "cache.example") {
+				t.Errorf("error leaks the URL: %q", err)
 			}
 		})
 	}

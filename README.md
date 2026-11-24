@@ -127,6 +127,7 @@ Full records are in [`docs/decisions.md`](docs/decisions.md). In short:
 | --- | --- | --- |
 | `API_KEY` | none | **Required.** Put it in `.env` (gitignored), see `.env.example` |
 | `PORT` | `8080` | 1..65535 |
+| `REDIS_URL` | empty | If set, replaces `REDIS_ADDR` and `REDIS_PASSWORD`: `redis://[user:password@]host:port[/db]`, or `rediss://` for TLS. Never logged |
 | `REDIS_ADDR` | `localhost:6379` | |
 | `REDIS_PASSWORD` | empty | |
 | `REDIS_TIMEOUT` | `200ms` | Per Redis call |

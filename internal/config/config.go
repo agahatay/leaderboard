@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // Ingest modes.
@@ -16,7 +18,10 @@ const (
 
 // Config holds the service configuration.
 type Config struct {
-	Port          int
+	Port int
+	// RedisURL, when set, replaces RedisAddr and RedisPassword. Hosting
+	// providers such as Render hand out a single redis:// or rediss:// URL.
+	RedisURL      string
 	RedisAddr     string
 	RedisPassword string
 	RedisTimeout  time.Duration
@@ -38,6 +43,7 @@ func Load(getenv func(string) string) (Config, error) {
 	p := parser{getenv: getenv}
 	cfg := Config{
 		Port:            p.intIn("PORT", 8080, 1, 65535),
+		RedisURL:        getenv("REDIS_URL"),
 		RedisAddr:       p.str("REDIS_ADDR", "localhost:6379"),
 		RedisPassword:   getenv("REDIS_PASSWORD"),
 		RedisTimeout:    p.positiveDuration("REDIS_TIMEOUT", 200*time.Millisecond),
@@ -50,6 +56,13 @@ func Load(getenv func(string) string) (Config, error) {
 		ShutdownTimeout: p.positiveDuration("SHUTDOWN_TIMEOUT", 10*time.Second),
 	}
 
+	if cfg.RedisURL != "" {
+		// The parse error is not included: it can contain the whole URL,
+		// password and all, and this message ends up in the logs.
+		if _, err := redis.ParseURL(cfg.RedisURL); err != nil {
+			p.errs = append(p.errs, errors.New("REDIS_URL must be a redis:// or rediss:// URL"))
+		}
+	}
 	if cfg.APIKey == "" {
 		p.errs = append(p.errs, errors.New("API_KEY is required"))
 	}
@@ -61,6 +74,20 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// RedisOptions returns the connection options for go-redis: from RedisURL
+// if it is set, otherwise from RedisAddr and RedisPassword. Load has already
+// checked that RedisURL parses.
+func (c Config) RedisOptions() (*redis.Options, error) {
+	if c.RedisURL != "" {
+		opts, err := redis.ParseURL(c.RedisURL)
+		if err != nil {
+			return nil, errors.New("REDIS_URL must be a redis:// or rediss:// URL")
+		}
+		return opts, nil
+	}
+	return &redis.Options{Addr: c.RedisAddr, Password: c.RedisPassword}, nil
 }
 
 // parser collects errors so that Load can report all of them together.

@@ -61,12 +61,13 @@ func main() {
 
 // run connects to Redis and serves until ctx is cancelled.
 func run(ctx context.Context, logger *slog.Logger, cfg config.Config) error {
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     cfg.RedisAddr,
-		Password: cfg.RedisPassword,
-		// Make go-redis honour our per-call context deadlines (REDIS_TIMEOUT).
-		ContextTimeoutEnabled: true,
-	})
+	opts, err := cfg.RedisOptions() // REDIS_URL if set, else REDIS_ADDR
+	if err != nil {
+		return err
+	}
+	// Make go-redis honour our per-call context deadlines (REDIS_TIMEOUT).
+	opts.ContextTimeoutEnabled = true
+	rdb := redis.NewClient(opts)
 	defer func() {
 		if err := rdb.Close(); err != nil {
 			logger.Error("close redis client", "err", err)
@@ -78,7 +79,8 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.Config) error {
 	// fail with 500 until Redis is reachable.
 	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	if err := store.Ping(pingCtx); err != nil {
-		logger.Warn("redis not reachable at startup", "addr", cfg.RedisAddr, "err", err)
+		// Only host:port is logged; the password stays in opts.
+		logger.Warn("redis not reachable at startup", "addr", opts.Addr, "err", err)
 	}
 	cancel()
 
