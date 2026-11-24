@@ -7,8 +7,9 @@ Players submit scores; clients read the top N, a player's rank, and the
 players around them. Score writes go through a bounded in-memory queue and a
 pool of worker goroutines that write to Redis in batches.
 
-Status: **v0.2**. Async ingest, graceful shutdown, API key auth,
-readiness probe, "around" endpoint.
+Status: **v0.3**. Async ingest, graceful shutdown, API key auth,
+readiness probe, "around" endpoint, load generator with measured results,
+nginx in front of several replicas, image published to GHCR.
 
 ## Quick start
 
