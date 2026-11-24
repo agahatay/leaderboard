@@ -153,3 +153,49 @@ this setting must be turned off.
 
 **Cost.** A retried request can take longer, and a request the client sees
 as failed (for example after its own timeout) may still have been written.
+
+## 11. Known gap: nginx keeps sending requests to a stopped replica
+
+**Decision.** Not fixed yet; documented here and in the README.
+
+**What happens.** nginx resolves `api` to the replica IPs once, at startup,
+so a stopped replica's IP stays in the upstream group. A connection attempt
+to a stopped container gets no answer (no refusal), so it hangs. nginx's own
+`proxy_connect_timeout` is 60 s by default, and the client (loadgen, 5 s
+timeout) gives up first. nginx then logs 499 (client closed) and does not
+count it as a failure of the replica, so the replica stays in rotation.
+
+**Measured** (one of three replicas stopped 10 s into a 30 s run; raw logs in
+`docs/benchmarks/2026-11-24/`):
+
+| | `lb.conf` | `lb-retry.conf` |
+| --- | --- | --- |
+| Requests | 486,158 | 490,216 |
+| Client timeouts caused by this | 110 | 140 |
+
+All of them went to the stopped replica's IP, with no connect time and
+4.95 to 5.00 s each. They started within 10 s of nginx logging that replica
+as "temporarily disabled". nginx ran 16 worker processes and the upstream
+has no `zone`, so each worker keeps its own failure state; that fits what we
+saw but was not tested on its own.
+
+**How it could be fixed** (none of these measured yet):
+
+- **Re-resolve DNS periodically**: `resolver 127.0.0.11 valid=5s;`, a `zone`
+  in the upstream and `server api:8080 resolve;` (nginx 1.27.3 and later).
+  Docker's DNS drops a stopped container, so it leaves the upstream list.
+- **Let nginx see the failure itself**: a short `proxy_connect_timeout`
+  (for example 1 s) makes the hung connect a counted failure, retried on
+  another replica. Only then do `max_fails` / `fail_timeout` take effect
+  (defaults: 1 failure takes the replica out for 10 s, then nginx tries it
+  again); a `zone` shares that state across workers. Changing `max_fails` /
+  `fail_timeout` alone would not help here, because the failure is never
+  counted.
+- **A load balancer with active health checks** (for example HAProxy or
+  Traefik; in nginx only the commercial version has `health_check`). It probes
+  replicas on its own and removes one that stops answering, without waiting
+  for a client request to fail.
+
+**Cost of leaving it.** While a replica is down, a small share of requests
+wait for the client's timeout. No accepted score is lost: in both runs the
+202 count equalled `ZCARD`.

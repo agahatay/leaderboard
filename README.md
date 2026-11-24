@@ -279,7 +279,8 @@ The nginx log shows two different failures:
    connect time, about 5 s each. A connection attempt to a stopped
    container's address got no answer, so it hung until loadgen gave up, and
    nginx did not count that as a failure of the replica. The retry setting
-   does not help here. See "Known limitations".
+   does not help here. See "Known limitations" and decision 11 in
+   [`docs/decisions.md`](docs/decisions.md).
 
 No 202-accepted score was lost in either run (202 count = `ZCARD`). A first
 run with the default config, before the nginx failure log was added, gave
@@ -301,9 +302,14 @@ the same picture: 10 × 502 and 134 timeouts out of 487,835 requests.
 - One Redis instance, no replication.
 - **Behind nginx, a stopped replica keeps getting requests.** nginx resolves
   `api` once at startup, and a connection attempt to a stopped container
-  hangs instead of failing, so those requests wait for the client's timeout
-  (measured above). Not fixed yet; likely remedies are a short
-  `proxy_connect_timeout` or re-resolving `api` through Docker's DNS.
+  hangs instead of failing. The client times out first, so nginx never
+  counts it as a failure. Measured with one of three replicas stopped:
+  110 of 486,158 requests (default config) and 140 of 490,216 (retry
+  config) waited for the 5 s client timeout. Not fixed yet. Possible fixes:
+  re-resolve `api` through Docker's DNS periodically; a short
+  `proxy_connect_timeout` so that `max_fails` / `fail_timeout` take effect;
+  or a load balancer with active health checks. Details in decision 11 of
+  [`docs/decisions.md`](docs/decisions.md).
 
 ## How this was built
 
