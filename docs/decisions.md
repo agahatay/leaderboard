@@ -128,8 +128,9 @@ and adds nginx on `:8080`, so `--scale api=3` works. The plain
 add the nginx service but cannot take a port away from `api`, so a profile
 alone would have needed a second copy of the `api` service.
 
-**Cost.** A longer command (two `-f` files). nginx resolves `api` once at
-startup, so it must be restarted after replicas are added or recreated.
+**Cost.** A longer command (two `-f` files). (Until 2026-11-25 nginx also had
+to be restarted after replicas were added or recreated; since decision 11 it
+re-resolves `api` every 2 s.)
 
 ## 10. Retrying a failed POST on another replica (`lb-retry.conf`)
 
@@ -154,51 +155,59 @@ this setting must be turned off.
 **Cost.** A retried request can take longer, and a request the client sees
 as failed (for example after its own timeout) may still have been written.
 
-## 11. Known gap: nginx keeps sending requests to a stopped replica
+## 11. nginx re-resolves replicas and shares failure state
 
-**Decision.** Not fixed yet; documented here and in the README.
+**Problem (found 2026-11-24).** nginx resolved `api` to the replica IPs once,
+at startup, so a stopped replica's IP stayed in the upstream group. A
+connection attempt to a stopped container gets no answer (no refusal), so it
+hung. nginx's `proxy_connect_timeout` was the default 60 s and the client
+(loadgen, 5 s timeout) gave up first; nginx logged 499 and did not count it
+as a failure of the replica. The upstream had no `zone`, so each of the 16
+nginx worker processes kept its own failure state.
 
-**What happens.** nginx resolves `api` to the replica IPs once, at startup,
-so a stopped replica's IP stays in the upstream group. A connection attempt
-to a stopped container gets no answer (no refusal), so it hangs. nginx's own
-`proxy_connect_timeout` is 60 s by default, and the client (loadgen, 5 s
-timeout) gives up first. nginx then logs 499 (client closed) and does not
-count it as a failure of the replica, so the replica stays in rotation.
+**Decision (2026-11-25).** In both `lb.conf` and `lb-retry.conf`:
 
-**Measured** (one of three replicas stopped 10 s into a 30 s run; raw logs in
-`docs/benchmarks/2026-11-24/`):
+- `resolver 127.0.0.11 valid=2s` (Docker's DNS), a `zone` in the upstream,
+  and `server api:8080 resolve`. nginx re-resolves `api` every 2 s; Docker's
+  DNS only returns running replicas, so a stopped one leaves the group and a
+  restarted one joins without restarting nginx. The `zone` also shares
+  failure counts across workers.
+- `proxy_connect_timeout 1s`, as a safety net for the up-to-2 s window
+  before the next DNS lookup: a hung connect then fails within 1 s, counts
+  as a failure and is retried on another replica (allowed even for POST,
+  since nothing was sent).
 
-| | `lb.conf` | `lb-retry.conf` |
-| --- | --- | --- |
-| Requests | 486,158 | 490,216 |
-| Client timeouts caused by this | 110 | 140 |
+**Measured** (one of three replicas stopped 10 s into a 30 s run, same
+machine and script; raw logs in `docs/benchmarks/2026-11-24/` and
+`docs/benchmarks/2026-11-25/`):
 
-All of them went to the stopped replica's IP, with no connect time and
-4.95 to 5.00 s each. They started within 10 s of nginx logging that replica
-as "temporarily disabled". nginx ran 16 worker processes and the upstream
-has no `zone`, so each worker keeps its own failure state; that fits what we
-saw but was not tested on its own.
+| | `lb.conf` before | `lb.conf` after | `lb-retry.conf` before | `lb-retry.conf` after |
+| --- | --- | --- | --- | --- |
+| Requests | 486,158 | 660,371 | 490,216 | 674,469 |
+| Client timeouts (5 s) | 110 | 0 | 140 | 0 |
+| 502 at the moment of the stop | 14 | 2 | 0 | 0 |
+| 202 count = `ZCARD` | yes | yes | yes | yes |
 
-**How it could be fixed** (none of these measured yet):
+After the fix, Docker's DNS answered only the two running replicas while
+api-2 was stopped, and after `docker start leaderboard-api-2` (nginx not
+restarted) a 3 s run split 15,607 / 15,607 / 15,607 requests across the
+three replicas.
 
-- **Re-resolve DNS periodically**: `resolver 127.0.0.11 valid=5s;`, a `zone`
-  in the upstream and `server api:8080 resolve;` (nginx 1.27.3 and later).
-  Docker's DNS drops a stopped container, so it leaves the upstream list.
-- **Let nginx see the failure itself**: a short `proxy_connect_timeout`
-  (for example 1 s) makes the hung connect a counted failure, retried on
-  another replica. Only then do `max_fails` / `fail_timeout` take effect
-  (defaults: 1 failure takes the replica out for 10 s, then nginx tries it
-  again); a `zone` shares that state across workers. Changing `max_fails` /
-  `fail_timeout` alone would not help here, because the failure is never
-  counted.
-- **A load balancer with active health checks** (for example HAProxy or
-  Traefik; in nginx only the commercial version has `health_check`). It probes
-  replicas on its own and removes one that stops answering, without waiting
-  for a client request to fail.
+**What we do not know.** In both runs after the fix the nginx log has no
+"timed out while connecting" line, so the 1 s connect timeout never fired.
+The shared `zone` and DNS re-resolution were enough here; these runs do not
+show which of the two alone would have been. The connect timeout stays as a
+safety net for the case these runs did not hit.
 
-**Cost of leaving it.** While a replica is down, a small share of requests
-wait for the client's timeout. No accepted score is lost: in both runs the
-202 count equalled `ZCARD`.
+**Other options, not used.** A load balancer with active health checks (for
+example HAProxy or Traefik; in nginx only the commercial version has
+`health_check`) would probe replicas on its own. Not needed for this setup
+after the fix above.
+
+**Cost.** nginx sends a DNS query every 2 s. A replica that is up but takes
+longer than 1 s to accept a connection would be counted as failed. The 502s
+at the moment of the stop are a separate issue (decision 10): `lb.conf`
+still lets them through, `lb-retry.conf` retries them.
 
 ## 12. Render deploys come only from CI, through a deploy hook
 

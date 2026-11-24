@@ -1,0 +1,12 @@
+loadgen: POST http://localhost:8080/v1/leaderboards/fixedlbretry/scores  c=50 d=30s rate=0 players=0
+elapsed      30.00s
+requests     674469 total, 674469 ok (2xx), 0 errors
+throughput   22481.5 req/s total, 22481.5 req/s ok
+error rate   0.000%
+status codes
+  202  674469
+latency of 2xx responses
+  p50  1.64ms
+  p95  5.44ms
+  p99  9.02ms
+  max  169.48ms

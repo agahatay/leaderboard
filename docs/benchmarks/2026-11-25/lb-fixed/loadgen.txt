@@ -1,0 +1,13 @@
+loadgen: POST http://localhost:8080/v1/leaderboards/fixedlb/scores  c=50 d=30s rate=0 players=0
+elapsed      30.00s
+requests     660371 total, 660369 ok (2xx), 2 errors
+throughput   22009.3 req/s total, 22009.2 req/s ok
+error rate   0.000%
+status codes
+  202  660369
+  502  2
+latency of 2xx responses
+  p50  1.68ms
+  p95  5.51ms
+  p99  9.03ms
+  max  80.99ms
