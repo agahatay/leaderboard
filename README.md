@@ -184,8 +184,10 @@ for phase 4; they will be listed here with date, machine and exact command.
 
 ## How this was built
 
-The code was written with [Claude Code](https://claude.com/claude-code) under
-my direction: I set the requirements, the phases and the conventions in
-`CLAUDE.md`, and approved each plan before it was implemented.
+**Scope and plan:** decided by me and written down in `CLAUDE.md` with help from Claude.
+**Implementation:** Claude Code, working phase by phase under my direction.
 
-What I reviewed and tested myself: _TODO (to be filled in by me)._
+What I checked myself:
+- Reviewed the result of a fresh-clone test of the quick start. It found a missing
+  step in this README, which is now fixed.
+- I have not reviewed every line of code yet. I am working through it phase by phase.
