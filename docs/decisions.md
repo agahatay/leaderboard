@@ -117,3 +117,39 @@ process does not exit when Redis is down at startup.
 routing traffic (readiness), not kill the process (liveness).
 
 **Cost.** While Redis is down, requests that reach the API fail with 500.
+
+## 9. Several replicas behind nginx through a Compose override file
+
+**Decision.** `compose.lb.yml` removes the API's host port (`ports: !reset []`)
+and adds nginx on `:8080`, so `--scale api=3` works. The plain
+`docker compose up` from the quick start is unchanged.
+
+**Why.** Replicas cannot all publish host port 8080. A Compose profile can
+add the nginx service but cannot take a port away from `api`, so a profile
+alone would have needed a second copy of the `api` service.
+
+**Cost.** A longer command (two `-f` files). nginx resolves `api` once at
+startup, so it must be restarted after replicas are added or recreated.
+
+## 10. Retrying a failed POST on another replica (`lb-retry.conf`)
+
+**Decision.** `deploy/nginx/lb-retry.conf` adds
+`proxy_next_upstream error timeout non_idempotent`, so nginx resends a POST
+to another replica even when the first one may already have received it.
+`lb.conf` keeps nginx's default, which never resends a POST once it was
+sent. Pick one with `NGINX_CONF`.
+
+**Why.** When a replica shuts down, nginx can send a request on a keep-alive
+connection that the replica is closing. With the default config those
+requests failed with 502 (14 in the measured run); with retries, 0. See
+"Measured results" in the README.
+
+**This is safe only because writes use `ZADD GT` (decision 1).** If the
+first replica did process the request, the retry writes the same score
+again, and "keep the higher score" makes the second write a no-op. In a
+cumulative mode (`ZINCRBY`, "add to the total") the same retry would count
+the score twice. Such a mode would need an idempotency key per request, or
+this setting must be turned off.
+
+**Cost.** A retried request can take longer, and a request the client sees
+as failed (for example after its own timeout) may still have been written.

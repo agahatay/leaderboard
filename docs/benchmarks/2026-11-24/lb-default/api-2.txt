@@ -1,0 +1,2 @@
+{"time":"2026-11-24T14:00:22.223177084Z","level":"INFO","msg":"shutdown signal received"}
+{"time":"2026-11-24T14:00:22.233656553Z","level":"INFO","msg":"shutdown complete"}

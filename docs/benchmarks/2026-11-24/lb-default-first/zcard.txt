@@ -1,0 +1,2 @@
+ZCARD lb:lbdefault = 487691
+(read after api-2 had stopped, while loadgen was still waiting on its timed-out requests; no more 202s came after this point)

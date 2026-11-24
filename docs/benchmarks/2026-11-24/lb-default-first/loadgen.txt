@@ -1,0 +1,15 @@
+loadgen: POST http://localhost:8080/v1/leaderboards/lbdefault/scores  c=50 d=30s rate=0 players=0
+elapsed      34.99s
+requests     487835 total, 487691 ok (2xx), 144 errors
+throughput   13940.3 req/s total, 13936.2 req/s ok
+error rate   0.030%
+status codes
+  202  487691
+  502  10
+transport errors
+  timeout  134
+latency of 2xx responses
+  p50  1.18ms
+  p95  4.79ms
+  p99  8.19ms
+  max  134ms

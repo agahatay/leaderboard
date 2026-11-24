@@ -83,6 +83,8 @@ then exit. Both steps share `SHUTDOWN_TIMEOUT`.
 | Path | Role |
 | --- | --- |
 | `cmd/server` | Config, wiring, HTTP server, graceful shutdown, `-healthcheck` flag |
+| `cmd/loadgen` | Load generator: N clients, one collector, latency percentiles |
+| `compose.lb.yml`, `deploy/nginx` | nginx in front of `--scale api=N` |
 | `internal/api` | Routes, handlers, API key and logging middleware, JSON helpers |
 | `internal/ingest` | Bounded queue, worker pool, batched writes with retry |
 | `internal/leaderboard` | Domain types, validation, `Service`, `Store` interface, `MemoryStore` |
@@ -233,6 +235,54 @@ expected, and none of them got a 202. The 143 rejections in the first run
 are back-pressure working as designed; why the queue filled in that run and
 not in the 10,000-player runs was not investigated.
 
+### One of three replicas stopped under load
+
+Same machine and date. Three API replicas (async mode) behind nginx 1.30.8;
+loadgen sends to nginx. 10 s into a 30 s run, `docker stop leaderboard-api-2`
+sends SIGTERM, so that replica shuts down gracefully (from "shutdown signal
+received" to "shutdown complete" in its log: 10.5 ms and 6.8 ms). The
+script that ran both configurations the same way and its raw output
+(loadgen, nginx log, timeline) are in
+[`docs/benchmarks/2026-11-24/`](docs/benchmarks/2026-11-24/).
+
+```sh
+docker compose -f docker-compose.yml -f compose.lb.yml up -d --build --scale api=3 --wait
+go build -o loadgen.exe ./cmd/loadgen
+# starts loadgen -c 50 -d 30s -players 0, runs docker stop leaderboard-api-2 after 10 s
+docs/benchmarks/2026-11-24/failover.sh lb.conf       lbdefault2 out/default
+docs/benchmarks/2026-11-24/failover.sh lb-retry.conf lbretry    out/retry
+```
+
+| | `lb.conf` (nginx default retries) | `lb-retry.conf` (`non_idempotent`) |
+| --- | --- | --- |
+| Requests | 486,158 | 490,216 |
+| 202 accepted | 486,034 | 490,076 |
+| `ZCARD` after the run | 486,034 | 490,076 |
+| **Failed requests** | **124 (0.026%)** | **140 (0.029%)** |
+| of which 502 at the moment of the stop | 14 | 0 |
+| of which client timeout (5 s) | 110 | 140 |
+| p50 / p95 / p99 of 2xx | 1.6 / 5.67 / 9.49 ms | 1.26 / 4.78 / 8.31 ms |
+
+The nginx log shows two different failures:
+
+1. **502 at the moment of the stop.** nginx sent the request on a keep-alive
+   connection that the stopping replica closed ("upstream prematurely closed
+   connection"). nginx does not resend a POST that was already sent, so the
+   client got 502. With `non_idempotent` all 19 such upstream errors in that
+   run were retried on another replica: 0 reached the client. This is safe
+   only because the write is `ZADD GT`; see decision 10 in
+   [`docs/decisions.md`](docs/decisions.md).
+2. **Client timeouts for the rest of the run.** All of them were sent to the
+   stopped replica's IP; nginx logged them as 499 (client closed) with no
+   connect time, about 5 s each. A connection attempt to a stopped
+   container's address got no answer, so it hung until loadgen gave up, and
+   nginx did not count that as a failure of the replica. The retry setting
+   does not help here. See "Known limitations".
+
+No 202-accepted score was lost in either run (202 count = `ZCARD`). A first
+run with the default config, before the nginx failure log was added, gave
+the same picture: 10 × 502 and 134 timeouts out of 487,835 requests.
+
 ## Known limitations
 
 - **Equal scores are ordered by player ID** (descending, Redis `REV` order),
@@ -247,6 +297,11 @@ not in the 10,000-player runs was not investigated.
 - Redis in `docker-compose.yml` has no password and is bound to `127.0.0.1`.
   It is meant for local development only.
 - One Redis instance, no replication.
+- **Behind nginx, a stopped replica keeps getting requests.** nginx resolves
+  `api` once at startup, and a connection attempt to a stopped container
+  hangs instead of failing, so those requests wait for the client's timeout
+  (measured above). Not fixed yet; likely remedies are a short
+  `proxy_connect_timeout` or re-resolving `api` through Docker's DNS.
 
 ## How this was built
 

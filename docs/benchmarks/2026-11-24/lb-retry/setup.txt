@@ -1,0 +1,6 @@
+api-1 172.19.0.3
+api-2 172.19.0.4
+api-3 172.19.0.5
+    access_log  /var/log/nginx/access.log  main;
+    access_log /dev/stdout failures if=$not_2xx; # all 2xx lines would slow the test
+        proxy_next_upstream error timeout non_idempotent;

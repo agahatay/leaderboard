@@ -1,0 +1,14 @@
+loadgen: POST http://localhost:8080/v1/leaderboards/lbretry/scores  c=50 d=30s rate=0 players=0
+elapsed      34.73s
+requests     490216 total, 490076 ok (2xx), 140 errors
+throughput   14113.6 req/s total, 14109.5 req/s ok
+error rate   0.029%
+status codes
+  202  490076
+transport errors
+  timeout  140
+latency of 2xx responses
+  p50  1.26ms
+  p95  4.78ms
+  p99  8.31ms
+  max  68.11ms
