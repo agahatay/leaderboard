@@ -212,7 +212,14 @@ ones that fail tests, and each push would deploy twice. `/healthz` rather
 than `/readyz`, for the reason in decision 8: if Key Value is unreachable,
 restarting the API does not help.
 
-**Cost.** The hook deploys the newest commit on `main` at the moment Render
-handles it, not the exact commit CI tested; two quick pushes can let an
-untested commit through. Without the secret (for example on a fork), the
-job is skipped and nothing is deployed.
+**The tested commit, not the newest one.** The job adds
+`ref=<github.sha>` to the hook URL (with `&` if the URL already has a query
+string). Without it, Render deploys whatever is newest on `main` when it
+handles the request, and two quick pushes could deploy a commit whose
+checks had not finished.
+
+**Cost.** Deploys follow the order in which CI runs finish, not push order.
+If an older push finishes CI after a newer one, the older commit is
+deployed last and stays live until the next deploy; `concurrency: deploy`
+only keeps two deploys from running at once. Without the secret (for
+example on a fork), the job is skipped and nothing is deployed.

@@ -94,7 +94,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # On pushes to main, after every other check passed: ask Render to deploy.
+  # On pushes to main, after every other check passed: ask Render to deploy
+  # exactly the commit that was tested (ref=<github.sha>), not whatever is
+  # newest on main by the time Render handles the request.
   # The hook URL is a secret (anyone with it can trigger a deploy). If the
   # secret is not set, for example on a fork, the job passes and skips.
   # A job-level `if` cannot read secrets, hence the env + step-level checks.
@@ -102,7 +104,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [lint, test, docker]
     runs-on: ubuntu-latest
-    concurrency: deploy # one deploy at a time, in push order
+    concurrency: deploy # one deploy job at a time (not a guarantee of push order)
     env:
       RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
     steps:
@@ -111,5 +113,22 @@ jobs:
         run: echo "RENDER_DEPLOY_HOOK is not set; skipping deploy."
       - name: Trigger Render deploy
         if: env.RENDER_DEPLOY_HOOK != ''
-        # -f fails the job on an HTTP error; the URL itself is never printed.
-        run: curl -fsS --retry 3 -X POST "$RENDER_DEPLOY_HOOK" -o /dev/null
+        # Prints only the HTTP status and the deploy ID, never the hook URL
+        # (it contains the key) or the response body.
+        run: |
+          case "$RENDER_DEPLOY_HOOK" in
+            *\?*) sep='&' ;;
+            *)     sep='?' ;;
+          esac
+          status=$(curl -sS --retry 3 -X POST -o response.json -w '%{http_code}' \
+            "${RENDER_DEPLOY_HOOK}${sep}ref=${GITHUB_SHA}")
+          echo "Render deploy hook: HTTP $status for commit $GITHUB_SHA"
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            exit 1
+          fi
+          deploy_id=$(jq -r '.deploy.id // empty' response.json)
+          if [ -z "$deploy_id" ]; then
+            echo "No deploy ID in the response. Top-level keys: $(jq -c 'keys' response.json)"
+            exit 1
+          fi
+          echo "Render deploy ID: $deploy_id"
