@@ -328,12 +328,44 @@ The nginx log shows two different failures:
    connect time, about 5 s each. A connection attempt to a stopped
    container's address got no answer, so it hung until loadgen gave up, and
    nginx did not count that as a failure of the replica. The retry setting
-   does not help here. See "Known limitations" and decision 11 in
-   [`docs/decisions.md`](docs/decisions.md).
+   does not help here. **Fixed on 2026-11-25, see below.**
 
 No 202-accepted score was lost in either run (202 count = `ZCARD`). A first
 run with the default config, before the nginx failure log was added, gave
 the same picture: 10 × 502 and 134 timeouts out of 487,835 requests.
+
+### After the nginx fix (2026-11-25)
+
+Same machine, same script (copied to
+[`docs/benchmarks/2026-11-25/`](docs/benchmarks/2026-11-25/) with the raw
+output). Both configs now re-resolve `api` through Docker's DNS every 2 s,
+share failure state across nginx workers (`zone`) and use
+`proxy_connect_timeout 1s`; decision 11 in
+[`docs/decisions.md`](docs/decisions.md) has the details.
+
+| | `lb.conf` before | `lb.conf` after | `lb-retry.conf` before | `lb-retry.conf` after |
+| --- | --- | --- | --- | --- |
+| Requests | 486,158 | 660,371 | 490,216 | 674,469 |
+| **Failed requests** | **124** | **2** | **140** | **0** |
+| of which client timeout (5 s) | 110 | 0 | 140 | 0 |
+| of which 502 at the moment of the stop | 14 | 2 | 0 | 0 |
+| Elapsed (30 s run) | 34.33 s | 30.00 s | 34.73 s | 30.00 s |
+| p50 / p95 / p99 of 2xx | 1.6 / 5.67 / 9.49 ms | 1.68 / 5.51 / 9.03 ms | 1.26 / 4.78 / 8.31 ms | 1.64 / 5.44 / 9.02 ms |
+| 202 count = `ZCARD` | yes | yes | yes | yes |
+
+- **No request waited for the client timeout any more.** Requests went up
+  mainly because no client sat in a 5 s wait and the run no longer ran over
+  30 s. Treat the request counts as a side effect, not as a throughput
+  comparison.
+- **The 2 remaining 502s** in `lb.conf` are the keep-alive race from point
+  1 above; `lb-retry.conf` retried them (0 errors).
+- **Which part did the work:** the nginx log has no connect timeout in
+  either run, so the 1 s `proxy_connect_timeout` did not fire. The shared
+  `zone` and DNS re-resolution were enough; these runs do not separate the
+  two.
+- **A restarted replica rejoins without restarting nginx:** after
+  `docker start leaderboard-api-2`, a 3 s run split 15,607 / 15,607 / 15,607
+  requests across the three replicas.
 
 ## Known limitations
 
@@ -359,16 +391,12 @@ the same picture: 10 × 502 and 134 timeouts out of 487,835 requests.
   one, the older commit is deployed last and stays live until the next
   deploy. `concurrency: deploy` only stops two deploy jobs from running at
   the same time.
-- **Behind nginx, a stopped replica keeps getting requests.** nginx resolves
-  `api` once at startup, and a connection attempt to a stopped container
-  hangs instead of failing. The client times out first, so nginx never
-  counts it as a failure. Measured with one of three replicas stopped:
-  110 of 486,158 requests (default config) and 140 of 490,216 (retry
-  config) waited for the 5 s client timeout. Not fixed yet. Possible fixes:
-  re-resolve `api` through Docker's DNS periodically; a short
-  `proxy_connect_timeout` so that `max_fails` / `fail_timeout` take effect;
-  or a load balancer with active health checks. Details in decision 11 of
-  [`docs/decisions.md`](docs/decisions.md).
+- **Behind nginx with `lb.conf`, a replica that is shutting down can cause
+  a few 502s** (2 in the measured run): requests already sent on a
+  keep-alive connection the replica is closing. `lb-retry.conf` retries
+  them (0 errors), which is safe only because writes use `ZADD GT`
+  (decision 10). The earlier problem of a stopped replica getting requests
+  until the client timed out is fixed (decision 11).
 
 ## How this was built
 
