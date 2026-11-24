@@ -23,9 +23,13 @@ docker compose up --build
 Compose refuses to start without `API_KEY` in `.env`. The API listens on
 `localhost:8080`; Redis runs with AOF persistence on a named volume.
 
-In a second terminal (same `API_KEY`):
+In a second terminal, from the repository folder:
 
 ```sh
+# A new shell does not have $API_KEY yet; load it from .env
+# (without this the POST below gets 401)
+set -a; . ./.env; set +a
+
 # Submit a score: 202 Accepted, written to Redis within FLUSH_INTERVAL
 curl -X POST localhost:8080/v1/leaderboards/global/scores \
   -H "X-API-Key: $API_KEY" -d '{"player_id":"alice","score":1200}'
