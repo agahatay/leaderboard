@@ -7,9 +7,21 @@ Players submit scores; clients read the top N, a player's rank, and the
 players around them. Score writes go through a bounded in-memory queue and a
 pool of worker goroutines that write to Redis in batches.
 
-Status: **v0.3**. Async ingest, graceful shutdown, API key auth,
+Status: **v1.0**. Async ingest, graceful shutdown, API key auth,
 readiness probe, "around" endpoint, load generator with measured results,
-nginx in front of several replicas, image published to GHCR.
+nginx in front of several replicas, image published to GHCR, deployed to
+Render by CI.
+
+**Live demo:** `https://<your-service>.onrender.com` (placeholder until the
+first deploy)
+
+```sh
+curl "https://<your-service>.onrender.com/v1/leaderboards/global/top?limit=10"
+```
+
+> **Note:** the demo runs on Render's free plan. If the service is asleep,
+> the first request can take about a minute while it starts. Demo data is
+> not persistent: it can disappear at any time.
 
 ## Quick start
 
@@ -121,6 +133,33 @@ Full records are in [`docs/decisions.md`](docs/decisions.md). In short:
 - **Distroless runtime image** (about 20 MB), so the binary has its own
   `-healthcheck` mode instead of curl.
 
+## Deploy (Render)
+
+```mermaid
+flowchart LR
+    Dev[git push main] --> GH[GitHub Actions]
+    GH --> L[lint] & T[test + Redis] & D[docker build]
+    L & T & D -->|all green| DEP[deploy job]
+    DEP -->|POST secret RENDER_DEPLOY_HOOK| R[Render]
+    R -->|builds Dockerfile| WS[Web service<br/>Go API, distroless]
+    WS -->|REDIS_URL, private network| KV[(Render Key Value)]
+    U[Client] -->|HTTPS| WS
+    TAG[git push tag v*] --> GH2[GitHub Actions] -->|after checks| GHCR[(ghcr.io image)]
+```
+
+- **Web service:** Render builds the same `Dockerfile` as local and CI. The
+  server listens on the `PORT` Render sets. Render's health check uses
+  `/healthz` (liveness), not `/readyz`: restarting the API does not fix a
+  Key Value outage (decision 8 in [`docs/decisions.md`](docs/decisions.md)).
+- **Key Value:** Render's Redis-compatible store. Its internal URL goes into
+  `REDIS_URL`; the API reaches it over Render's private network.
+- **Deploys come from CI only.** Render's auto-deploy is off. The `deploy`
+  job in `.github/workflows/ci.yml` runs on pushes to `main` after lint,
+  tests and the Docker build pass, and POSTs to the deploy hook stored in the
+  `RENDER_DEPLOY_HOOK` secret. Without that secret the job is skipped.
+- **Shutdown:** Render sends SIGTERM before it replaces an instance; the
+  queue drain from the graceful shutdown applies there too.
+
 ## Configuration
 
 | Variable | Default | Notes |
@@ -165,7 +204,9 @@ On Windows, `-race` needs cgo and a C compiler (for example MSYS2 UCRT64 gcc)
 on `PATH`. CI (GitHub Actions) runs the gofmt check, `go vet`,
 golangci-lint, `go test -race` against a Redis service container, and a
 Docker build. On `v*` tags, once all of those pass, it pushes the image to
-GitHub Container Registry as `ghcr.io/agahatay/leaderboard:<version>`.
+GitHub Container Registry as `ghcr.io/agahatay/leaderboard:<version>`. On
+pushes to `main`, once they pass, it triggers the Render deploy (see
+"Deploy (Render)").
 
 ## Measured results
 
@@ -301,6 +342,14 @@ the same picture: 10 × 502 and 134 timeouts out of 487,835 requests.
 - Redis in `docker-compose.yml` has no password and is bound to `127.0.0.1`.
   It is meant for local development only.
 - One Redis instance, no replication.
+- **The demo on Render's free plan sleeps and forgets.** After a period
+  without traffic the service sleeps and the first request waits for it to
+  start; the free Key Value keeps data in memory only, so it can be lost.
+- **The deploy hook deploys the latest commit on `main`, not necessarily the
+  one CI tested.** If a second push lands while the first is still in CI,
+  the first deploy can already pick up the newer commit, which has not
+  passed its checks yet. `concurrency: deploy` keeps deploys in order but
+  does not close this gap.
 - **Behind nginx, a stopped replica keeps getting requests.** nginx resolves
   `api` once at startup, and a connection attempt to a stopped container
   hangs instead of failing. The client times out first, so nginx never
