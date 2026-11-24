@@ -31,7 +31,7 @@ func startServe(t *testing.T, cfg config.Config, store leaderboard.Store) (strin
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, slog.New(slog.DiscardHandler), cfg, store, okPinger{}, ln) }()
+	go func() { done <- serve(ctx, slog.New(slog.DiscardHandler), cfg, "test", store, okPinger{}, ln) }()
 	return "http://" + ln.Addr().String(), cancel, done
 }
 

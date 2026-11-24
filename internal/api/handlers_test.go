@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -274,9 +275,21 @@ func TestSetNameValidation(t *testing.T) {
 }
 
 func TestHealthz(t *testing.T) {
-	h, _ := newTestHandler(t)
+	h := NewHandler(Deps{
+		Service: leaderboard.NewService(leaderboard.NewMemoryStore()),
+		Ready:   okPinger{}, APIKey: testAPIKey, Logger: slog.New(slog.DiscardHandler),
+		Commit: "1a0a1f784b7701745950e6218c21586a95596a29",
+	})
 	rec := do(t, h, http.MethodGet, "/healthz", "")
 	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", rec.Code)
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := map[string]string{"status": "ok", "commit": "1a0a1f784b7701745950e6218c21586a95596a29"}
+	if !maps.Equal(body, want) {
+		t.Errorf("body = %v, want %v", body, want)
 	}
 }

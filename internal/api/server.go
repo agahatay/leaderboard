@@ -28,6 +28,8 @@ type Deps struct {
 	Ready  Pinger
 	APIKey string
 	Logger *slog.Logger
+	// Commit is the git commit the binary was built from, shown by /healthz.
+	Commit string
 }
 
 type handler struct {
@@ -35,11 +37,12 @@ type handler struct {
 	queue  ScoreQueue
 	ready  Pinger
 	logger *slog.Logger
+	commit string
 }
 
 // NewHandler returns the HTTP handler with all routes registered.
 func NewHandler(d Deps) http.Handler {
-	h := &handler{svc: d.Service, queue: d.Queue, ready: d.Ready, logger: d.Logger}
+	h := &handler{svc: d.Service, queue: d.Queue, ready: d.Ready, logger: d.Logger, commit: d.Commit}
 	auth := requireAPIKey(d.APIKey)
 
 	mux := http.NewServeMux()

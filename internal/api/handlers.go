@@ -141,9 +141,10 @@ func (h *handler) setName(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, nameResponse{PlayerID: player, Name: req.Name})
 }
 
-// healthz is liveness: the process is up and serving HTTP.
+// healthz is liveness: the process is up and serving HTTP. It also says
+// which commit is running, so a deploy can be checked from outside.
 func (h *handler) healthz(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "commit": h.commit})
 }
 
 // readyz is readiness: the store answers a PING within readyTimeout.

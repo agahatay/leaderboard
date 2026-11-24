@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"syscall"
 	"time"
@@ -27,6 +28,45 @@ import (
 	"github.com/agahatay/leaderboard/internal/leaderboard"
 	"github.com/agahatay/leaderboard/internal/store/redisstore"
 )
+
+// commit is set at build time by the Dockerfile:
+// go build -ldflags "-X main.commit=<sha>". Empty in other builds.
+var commit string
+
+// buildCommit returns the git commit this binary runs, from the first
+// source that has it:
+//
+//  1. commit, set by -ldflags (Docker images built by CI);
+//  2. RENDER_GIT_COMMIT, which Render sets at runtime;
+//  3. the VCS stamp go build adds in a git checkout (local builds);
+//  4. "unknown".
+func buildCommit(getenv func(string) string, info *debug.BuildInfo) string {
+	if commit != "" {
+		return commit
+	}
+	if c := getenv("RENDER_GIT_COMMIT"); c != "" {
+		return c
+	}
+	if info != nil {
+		var rev string
+		var dirty bool
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				rev = s.Value
+			case "vcs.modified":
+				dirty = s.Value == "true"
+			}
+		}
+		if rev != "" {
+			if dirty {
+				rev += "-dirty" // built with uncommitted changes
+			}
+			return rev
+		}
+	}
+	return "unknown"
+}
 
 func main() {
 	healthcheck := flag.Bool("healthcheck", false, "GET http://localhost:$PORT/healthz and exit 0 if it returns 200")
@@ -53,14 +93,15 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, logger, cfg); err != nil {
+	info, _ := debug.ReadBuildInfo()
+	if err := run(ctx, logger, cfg, buildCommit(os.Getenv, info)); err != nil {
 		logger.Error("server stopped with error", "err", err)
 		os.Exit(1)
 	}
 }
 
 // run connects to Redis and serves until ctx is cancelled.
-func run(ctx context.Context, logger *slog.Logger, cfg config.Config) error {
+func run(ctx context.Context, logger *slog.Logger, cfg config.Config, commit string) error {
 	opts, err := cfg.RedisOptions() // REDIS_URL if set, else REDIS_ADDR
 	if err != nil {
 		return err
@@ -89,7 +130,7 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	return serve(ctx, logger, cfg, store, store, ln)
+	return serve(ctx, logger, cfg, commit, store, store, ln)
 }
 
 // serve runs the HTTP server and, in async mode, the ingest workers on ln
@@ -101,7 +142,7 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.Config) error {
 //
 // Both steps share one SHUTDOWN_TIMEOUT budget. It is separate from run so a
 // test can drive the real sequence with a MemoryStore and a random port.
-func serve(ctx context.Context, logger *slog.Logger, cfg config.Config,
+func serve(ctx context.Context, logger *slog.Logger, cfg config.Config, commit string,
 	store leaderboard.Store, ready api.Pinger, ln net.Listener,
 ) error {
 	deps := api.Deps{
@@ -109,6 +150,7 @@ func serve(ctx context.Context, logger *slog.Logger, cfg config.Config,
 		Ready:   ready,
 		APIKey:  cfg.APIKey,
 		Logger:  logger,
+		Commit:  commit,
 	}
 
 	var ing *ingest.Ingester
@@ -140,7 +182,7 @@ func serve(ctx context.Context, logger *slog.Logger, cfg config.Config,
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
-	logger.Info("server started", "addr", ln.Addr().String(), "ingest_mode", cfg.IngestMode)
+	logger.Info("server started", "addr", ln.Addr().String(), "ingest_mode", cfg.IngestMode, "commit", commit)
 
 	var errs []error
 	select {

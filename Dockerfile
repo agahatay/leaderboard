@@ -9,8 +9,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+# The git commit shown by /healthz. CI passes --build-arg COMMIT=<sha>; .git is
+# not in the build context, so without it the server falls back to
+# RENDER_GIT_COMMIT at runtime, or "unknown".
+ARG COMMIT=""
 # CGO_ENABLED=0 gives a static binary that runs on distroless/static.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.commit=${COMMIT}" -o /out/server ./cmd/server
 
 # --- runtime stage: no shell, no package manager, runs as non-root ---
 FROM gcr.io/distroless/static:nonroot

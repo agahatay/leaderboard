@@ -65,7 +65,7 @@ All responses are JSON. Errors look like `{"error": "message"}`, including
 | `GET /v1/leaderboards/{board}/players/{player}` | `{rank, score}`. 404 if the player is not on the board. |
 | `GET /v1/leaderboards/{board}/players/{player}/around?radius=5` | `{"entries":[...]}`: the player and up to `radius` players above and below, clamped at the ends. `radius` 1..50, default 5. 404 if not on the board. |
 | `PUT /v1/players/{player}` | Body `{"name"}`. Needs `X-API-Key`. |
-| `GET /healthz` | Liveness: 200 while the process runs. |
+| `GET /healthz` | Liveness: 200 while the process runs. Body `{"status":"ok","commit":"<git SHA>"}` shows which commit is running. |
 | `GET /readyz` | Readiness: 200 if Redis answers `PING` within 500 ms, else 503. |
 
 Validation: board and player IDs match `^[a-zA-Z0-9_-]{1,64}$`; score is an
@@ -159,6 +159,11 @@ flowchart LR
   exactly the commit that passed. The job log shows the HTTP status and the
   Render deploy ID, never the hook URL. Without the secret the job is
   skipped.
+- **Which commit is live:** `curl https://leaderboard-lo89.onrender.com/healthz`
+  returns the commit SHA. Images built by CI get it from
+  `--build-arg COMMIT=<sha>`; on Render it comes from `RENDER_GIT_COMMIT` at
+  runtime; a local `go build` in a git checkout uses Go's VCS stamp (with
+  `-dirty` for uncommitted changes); otherwise it is `unknown`.
 - **Shutdown:** Render sends SIGTERM before it replaces an instance; the
   queue drain from the graceful shutdown applies there too.
 

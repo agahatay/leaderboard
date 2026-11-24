@@ -58,7 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: docker build
-        run: docker build -t leaderboard:ci .
+        run: docker build --build-arg COMMIT=${{ github.sha }} -t leaderboard:ci .
 
   # On v* tags only, after every other job passed: push the image to
   # GitHub Container Registry as ghcr.io/<owner>/<repo>:<version>.
@@ -91,6 +91,7 @@ jobs:
         with:
           context: .
           push: true
+          build-args: COMMIT=${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
