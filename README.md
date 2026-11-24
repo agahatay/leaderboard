@@ -164,8 +164,74 @@ Docker build.
 
 ## Measured results
 
-Not measured yet. A load generator and real sync vs async numbers are planned
-for phase 4; they will be listed here with date, machine and exact command.
+All numbers below are copied from `cmd/loadgen` output. The raw output of
+every run is in [`docs/benchmarks/2026-11-24/`](docs/benchmarks/2026-11-24/).
+
+**Environment.** Measured on 2026-11-24 on **one machine**: the API and
+Redis 8 ran in Docker Compose, and loadgen ran on the same host and sent
+requests to `localhost:8080`. Network latency between machines is not part of
+these numbers. Treat them as a comparison between the two modes on this
+machine, not as production capacity.
+
+| | |
+| --- | --- |
+| CPU | 11th Gen Intel Core i7-11800H @ 2.30GHz, 8 cores / 16 threads |
+| RAM | 31.7 GB (Docker Desktop VM: 16 CPUs, 15.5 GiB) |
+| OS | Windows 11 Home Single Language 10.0.26300, Docker Desktop (WSL2 kernel 5.15.167.4) |
+| Go / Docker | go1.27.4 (loadgen), Docker 29.9.3, Compose v5.7.0 |
+| Service config | defaults: `QUEUE_SIZE=1024`, `WORKERS=4`, `BATCH_SIZE=100`, `FLUSH_INTERVAL=50ms`; JSON request log on |
+
+**Commands.** Each mode had a 5 s warm-up run first and started with an
+empty Redis (`FLUSHALL`). loadgen is closed-loop: each of the 50 clients
+sends its next request only after the previous response.
+
+```sh
+INGEST_MODE=sync  docker compose up -d --build --wait   # then, for async:
+INGEST_MODE=async docker compose up -d --wait api
+set -a; . ./.env; set +a
+go build -o loadgen.exe ./cmd/loadgen
+./loadgen.exe -c 50 -d 30s -board sync                 # -board async for async
+```
+
+**Results** (50 clients, 30 s, 10,000 player IDs, two runs per mode):
+
+| Mode | Run | Requests | Throughput | Errors | p50 | p95 | p99 | max |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| sync (200) | 1 | 713,745 | 23,790.7 req/s | 0 | 1.85 ms | 4.09 ms | 5.9 ms | 66.99 ms |
+| sync (200) | 2 | 754,219 | 25,139.3 req/s | 0 | 1.74 ms | 3.74 ms | 5.3 ms | 49.95 ms |
+| async (202) | 1 | 864,255 | 28,807.7 req/s | 0 | 1.56 ms | 3.69 ms | 5.41 ms | 55.39 ms |
+| async (202) | 2 | 866,219 | 28,873.1 req/s | 0 | 1.56 ms | 3.68 ms | 5.26 ms | 51.88 ms |
+
+**Read the latency columns with care.** The two modes do not measure the same
+work:
+
+- **sync** latency includes the Redis write (`ZADD GT`): a 200 means stored.
+- **async** latency covers only validation and putting the event on the
+  queue: a 202 means queued. The Redis write happens later in a worker
+  batch, up to `FLUSH_INTERVAL` (50 ms) plus the pipeline time after the
+  response, and **is not in these numbers**.
+
+So async does not make writes faster; it moves the write off the request
+path and groups up to 100 writes into one Redis round trip. On this machine
+that gave higher throughput and slightly lower response times, but the gap is
+small, because Redis on the same host answers fast. Where the rest of the
+time goes (HTTP handling, the JSON log, Docker Desktop's port forwarding) was
+not profiled.
+
+**No accepted score was lost.** Two async runs with `-players 0`, which gives
+every request its own player ID, so the number of 202s must equal `ZCARD`:
+
+| Run | 202 accepted | 503 (queue full) | `ZCARD` after drain |
+| --- | --- | --- | --- |
+| 30 s, then `docker compose stop api` | 867,209 | 143 | 867,209 |
+| 20 s, `docker compose stop api` **10 s into the run** | 269,436 | 0 | 269,436 |
+
+`ZCARD` was read after the logs showed `shutdown complete`. In the second
+run, the requests after the stop failed with transport errors (connection
+refused, EOF, reset) because no other instance was running; that is
+expected, and none of them got a 202. The 143 rejections in the first run
+are back-pressure working as designed; why the queue filled in that run and
+not in the 10,000-player runs was not investigated.
 
 ## Known limitations
 

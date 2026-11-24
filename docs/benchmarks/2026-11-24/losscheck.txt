@@ -1,0 +1,17 @@
+loadgen: POST http://localhost:8080/v1/leaderboards/losscheck/scores  c=50 d=30s rate=0 players=0
+elapsed      30.00s
+requests     867352 total, 867209 ok (2xx), 143 errors
+throughput   28910.2 req/s total, 28905.4 req/s ok
+error rate   0.016%
+status codes
+  202  867209
+  503  143
+latency of 2xx responses
+  p50  1.56ms
+  p95  3.7ms
+  p99  5.49ms
+  max  76.13ms
+
+$ docker compose stop api
+$ docker compose exec redis redis-cli ZCARD lb:losscheck
+867209

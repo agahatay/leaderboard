@@ -1,0 +1,22 @@
+loadgen: POST http://localhost:8080/v1/leaderboards/stopunderload/scores  c=50 d=20s rate=0 players=0
+elapsed      20.00s
+requests     327855 total, 269436 ok (2xx), 58419 errors
+throughput   16390.9 req/s total, 13470.3 req/s ok
+error rate   17.819%
+status codes
+  202  269436
+transport errors
+  connection closed (EOF)  2780
+  connection refused  55587
+  connection reset  49
+  other: Post "http://localhost:8080/v1/leaderboards/stopunderload/scores": http: server closed idle connection  2
+  timeout  1
+latency of 2xx responses
+  p50  1.62ms
+  p95  4.23ms
+  p99  6.43ms
+  max  82.74ms
+
+# docker compose stop api ran 10 s into the run
+$ docker compose exec redis redis-cli ZCARD lb:stopunderload
+269436

@@ -1,0 +1,12 @@
+loadgen: POST http://localhost:8080/v1/leaderboards/sync2/scores  c=50 d=30s rate=0 players=10000
+elapsed      30.00s
+requests     754219 total, 754219 ok (2xx), 0 errors
+throughput   25139.3 req/s total, 25139.3 req/s ok
+error rate   0.000%
+status codes
+  200  754219
+latency of 2xx responses
+  p50  1.74ms
+  p95  3.74ms
+  p99  5.3ms
+  max  49.95ms

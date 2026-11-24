@@ -1,0 +1,12 @@
+loadgen: POST http://localhost:8080/v1/leaderboards/async/scores  c=50 d=30s rate=0 players=10000
+elapsed      30.00s
+requests     864255 total, 864255 ok (2xx), 0 errors
+throughput   28807.7 req/s total, 28807.7 req/s ok
+error rate   0.000%
+status codes
+  202  864255
+latency of 2xx responses
+  p50  1.56ms
+  p95  3.69ms
+  p99  5.41ms
+  max  55.39ms
