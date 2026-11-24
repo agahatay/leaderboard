@@ -199,3 +199,20 @@ saw but was not tested on its own.
 **Cost of leaving it.** While a replica is down, a small share of requests
 wait for the client's timeout. No accepted score is lost: in both runs the
 202 count equalled `ZCARD`.
+
+## 12. Render deploys come only from CI, through a deploy hook
+
+**Decision.** Render's auto-deploy is off. The `deploy` job in CI POSTs to
+the deploy hook (secret `RENDER_DEPLOY_HOOK`) on pushes to `main`, after
+lint, tests and the Docker build pass. Render's health check path is
+`/healthz`.
+
+**Why.** With auto-deploy on, Render would deploy every push, including
+ones that fail tests, and each push would deploy twice. `/healthz` rather
+than `/readyz`, for the reason in decision 8: if Key Value is unreachable,
+restarting the API does not help.
+
+**Cost.** The hook deploys the newest commit on `main` at the moment Render
+handles it, not the exact commit CI tested; two quick pushes can let an
+untested commit through. Without the secret (for example on a fork), the
+job is skipped and nothing is deployed.

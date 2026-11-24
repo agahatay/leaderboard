@@ -93,3 +93,23 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  # On pushes to main, after every other check passed: ask Render to deploy.
+  # The hook URL is a secret (anyone with it can trigger a deploy). If the
+  # secret is not set, for example on a fork, the job passes and skips.
+  # A job-level `if` cannot read secrets, hence the env + step-level checks.
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, test, docker]
+    runs-on: ubuntu-latest
+    concurrency: deploy # one deploy at a time, in push order
+    env:
+      RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+    steps:
+      - name: Skip (RENDER_DEPLOY_HOOK not set)
+        if: env.RENDER_DEPLOY_HOOK == ''
+        run: echo "RENDER_DEPLOY_HOOK is not set; skipping deploy."
+      - name: Trigger Render deploy
+        if: env.RENDER_DEPLOY_HOOK != ''
+        # -f fails the job on an HTTP error; the URL itself is never printed.
+        run: curl -fsS --retry 3 -X POST "$RENDER_DEPLOY_HOOK" -o /dev/null
