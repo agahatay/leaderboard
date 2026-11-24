@@ -12,11 +12,10 @@ readiness probe, "around" endpoint, load generator with measured results,
 nginx in front of several replicas, image published to GHCR, deployed to
 Render by CI.
 
-**Live demo:** `https://<your-service>.onrender.com` (placeholder until the
-first deploy)
+**Live demo:** <https://leaderboard-lo89.onrender.com>
 
 ```sh
-curl "https://<your-service>.onrender.com/v1/leaderboards/global/top?limit=10"
+curl "https://leaderboard-lo89.onrender.com/v1/leaderboards/global/top?limit=10"
 ```
 
 > **Note:** the demo runs on Render's free plan. If the service is asleep,
@@ -156,7 +155,10 @@ flowchart LR
 - **Deploys come from CI only.** Render's auto-deploy is off. The `deploy`
   job in `.github/workflows/ci.yml` runs on pushes to `main` after lint,
   tests and the Docker build pass, and POSTs to the deploy hook stored in the
-  `RENDER_DEPLOY_HOOK` secret. Without that secret the job is skipped.
+  `RENDER_DEPLOY_HOOK` secret with `ref=<commit SHA>`, so Render deploys
+  exactly the commit that passed. The job log shows the HTTP status and the
+  Render deploy ID, never the hook URL. Without the secret the job is
+  skipped.
 - **Shutdown:** Render sends SIGTERM before it replaces an instance; the
   queue drain from the graceful shutdown applies there too.
 
@@ -345,11 +347,13 @@ the same picture: 10 × 502 and 134 timeouts out of 487,835 requests.
 - **The demo on Render's free plan sleeps and forgets.** After a period
   without traffic the service sleeps and the first request waits for it to
   start; the free Key Value keeps data in memory only, so it can be lost.
-- **The deploy hook deploys the latest commit on `main`, not necessarily the
-  one CI tested.** If a second push lands while the first is still in CI,
-  the first deploy can already pick up the newer commit, which has not
-  passed its checks yet. `concurrency: deploy` keeps deploys in order but
-  does not close this gap.
+- **Deploys are not guaranteed to happen in push order.** The deploy job
+  sends the tested commit to Render (`ref=<sha>`), so an untested commit is
+  never deployed. But each push has its own CI run, and deploys happen in
+  the order those runs finish. If an older push finishes CI after a newer
+  one, the older commit is deployed last and stays live until the next
+  deploy. `concurrency: deploy` only stops two deploy jobs from running at
+  the same time.
 - **Behind nginx, a stopped replica keeps getting requests.** nginx resolves
   `api` once at startup, and a connection attempt to a stopped container
   hangs instead of failing. The client times out first, so nginx never
