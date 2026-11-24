@@ -176,8 +176,10 @@ func TestRun(t *testing.T) {
 	if len(players) != s.Total {
 		t.Errorf("%d distinct players for %d requests", len(players), s.Total)
 	}
-	if s.Elapsed < cfg.Duration {
-		t.Errorf("elapsed %s is shorter than the test duration %s", s.Elapsed, cfg.Duration)
+	// The deadline starts above, a moment before run starts its own clock,
+	// so Elapsed can be a little under Duration. It must not end early.
+	if floor := cfg.Duration - 20*time.Millisecond; s.Elapsed < floor {
+		t.Errorf("elapsed %s, want at least %s: run stopped before the deadline", s.Elapsed, floor)
 	}
 }
 
