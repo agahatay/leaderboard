@@ -400,7 +400,8 @@ share failure state across nginx workers (`zone`) and use
 
 ## How this was built
 
-**Scope and plan:** decided by me and written down in `CLAUDE.md` with help from Claude.
+**Scope and plan:** decided by me and written down in a project brief with help from Claude
+(kept locally, not in this repository).
 **Implementation:** Claude Code, working phase by phase under my direction.
 
 What I checked myself:

@@ -1,5 +1,19 @@
-# Local secrets and config
+# Local secrets and config (.env.example stays tracked)
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Claude Code local files
+/.claude/
+/CLAUDE.md
+/CLAUDE.local.md
+
+# Local logs and temp files (root only; docs/benchmarks/**/*.log are tracked)
+/*.log
+/logs/
+/tmp/
 
 # Build output
 /bin/

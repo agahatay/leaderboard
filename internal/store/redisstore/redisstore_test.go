@@ -66,7 +66,7 @@ func TestRedisStore(t *testing.T) {
 	})
 }
 
-// Uses the key layout documented in CLAUDE.md, so other tools (redis-cli,
+// Uses the key layout documented in README.md ("Redis keys"), so other tools (redis-cli,
 // a future migration) can rely on it.
 func TestRedisStoreKeyLayout(t *testing.T) {
 	rdb := newClient(t)
